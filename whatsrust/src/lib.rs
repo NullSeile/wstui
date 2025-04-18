@@ -147,12 +147,21 @@ unsafe extern "C" {
     fn C_AddEventHandler(handler: CEventHandler, data: *mut c_void);
     fn C_GetAllContacts() -> CContactsMapResult;
     fn C_Disconnect();
+    fn C_PairPhone(phone: *const c_char) -> *const c_char;
 
     fn C_SetLogHandler(log_fn: LogFn);
     // fn (log_fn: extern "C" fn(*const c_char, *mut c_void), data: *mut c_void);
 }
 
-// #[cfg_attr(miri, ignore)]
+pub fn pair_phone(phone: &str) -> String {
+    let phone_c = std::ffi::CString::new(phone).unwrap();
+    let result = unsafe { C_PairPhone(phone_c.as_ptr()) };
+    let result_str = unsafe { std::ffi::CStr::from_ptr(result) }
+        .to_string_lossy()
+        .into_owned();
+    result_str
+}
+
 pub fn set_log_handler(log_fn: LogFn) {
     unsafe { C_SetLogHandler(log_fn) }
 }

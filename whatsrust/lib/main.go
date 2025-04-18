@@ -319,6 +319,17 @@ func C_Connect(handler C.QrCallback, data unsafe.Pointer) bool {
 	}
 }
 
+//export C_PairPhone
+func C_PairPhone(phone *C.char) *C.char {
+	goPhone := C.GoString(phone)
+	code, err := client.PairPhone(goPhone, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
+	if err != nil {
+		panic(err)
+	}
+	cCode := C.CString(code)
+	return cCode
+}
+
 //export C_SendMessage
 func C_SendMessage(jid *C.CJID, message *C.char) {
 	goJid := cToJid(*jid)

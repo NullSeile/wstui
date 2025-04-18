@@ -8,12 +8,20 @@ use ratatui::{
 };
 use wstui::*;
 
+use clap::Parser;
 use std::{
     ffi::c_char,
     sync::{Arc, Mutex},
 };
 use tui_textarea::TextArea;
 use whatsrust as wr;
+
+#[derive(Parser, Debug)]
+#[clap(author, version, about, long_about = None)]
+struct Args {
+    #[clap(short, long)]
+    phone: Option<String>,
+}
 
 extern "C" fn log_handler(msg: *const c_char, level: u8) {
     let msg = unsafe { std::ffi::CStr::from_ptr(msg) }
@@ -30,6 +38,8 @@ extern "C" fn log_handler(msg: *const c_char, level: u8) {
 }
 
 fn main() {
+    let args = Args::parse();
+
     let ws_database_path = "examplestore.db";
 
     let mut messages = MessagesStorage::new();
@@ -42,7 +52,13 @@ fn main() {
     info!("Starting WhatsRust...");
 
     wr::new_client(ws_database_path);
-    wr::connect(|data| qr2term::print_qr(data).unwrap());
+    wr::connect(move |data| {
+        qr2term::print_qr(data).unwrap();
+        if let Some(phone) = args.phone.as_ref() {
+            let code = wr::pair_phone(phone);
+            println!("Pairing code: {}", code);
+        }
+    });
 
     let message_queue = Arc::new(Mutex::new(Vec::<Message>::new()));
 
