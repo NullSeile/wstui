@@ -17,7 +17,6 @@ struct CJID {
     server: *mut c_char,
 }
 
-// Rust-friendly version
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct JID {
     pub user: String,
@@ -70,6 +69,31 @@ struct CContact {
     business_name: *const c_char,
 }
 
+#[repr(C)]
+struct CMessageInfo {
+    id: *const c_char,
+    chat: CJID,
+    sender: CJID,
+    timestamp: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct MessageInfo {
+    pub id: String,
+    pub chat: JID,
+    pub sender: JID,
+    pub timestamp: i64,
+}
+
+#[repr(C)]
+struct CTextMessage {
+    info: CMessageInfo,
+    message: *const c_char,
+}
+
+#[derive(Clone, Debug)]
+pub struct TextMessage(pub MessageInfo, pub String);
+
 // Rust-friendly version
 #[derive(Clone, Debug)]
 pub struct Contact {
@@ -115,7 +139,7 @@ struct CContactsMapResult {
 pub type LogFn = extern "C" fn(*const c_char, u8);
 
 type CQrCallback = extern "C" fn(*const c_char, *mut c_void);
-type CEventHandler = extern "C" fn(*const c_char, *mut c_void);
+type CEventHandler = extern "C" fn(*const CTextMessage, *mut c_void);
 unsafe extern "C" {
     fn C_NewClient(db_path: *const c_char);
     fn C_Connect(qr_cb: CQrCallback, data: *mut c_void) -> bool;
@@ -123,8 +147,14 @@ unsafe extern "C" {
     fn C_AddEventHandler(handler: CEventHandler, data: *mut c_void);
     fn C_GetAllContacts() -> CContactsMapResult;
     fn C_Disconnect();
-    pub fn C_SetLogHandler(log_fn: LogFn);
+
+    fn C_SetLogHandler(log_fn: LogFn);
     // fn (log_fn: extern "C" fn(*const c_char, *mut c_void), data: *mut c_void);
+}
+
+// #[cfg_attr(miri, ignore)]
+pub fn set_log_handler(log_fn: LogFn) {
+    unsafe { C_SetLogHandler(log_fn) }
 }
 
 pub fn new_client(db_path: &str) {
@@ -134,12 +164,29 @@ pub fn new_client(db_path: &str) {
 
 struct EventHandler;
 impl CallbackTranslator for EventHandler {
-    type CType = *const c_char;
-    type RustType = String;
+    type CType = *const CTextMessage;
+    type RustType = TextMessage;
 
     unsafe fn to_rust(ptr: Self::CType) -> Self::RustType {
-        let c_str = unsafe { std::ffi::CStr::from_ptr(ptr) };
-        c_str.to_string_lossy().into_owned()
+        let message_info = unsafe { &(*ptr).info };
+        let id = unsafe { std::ffi::CStr::from_ptr(message_info.id) }
+            .to_string_lossy()
+            .into_owned();
+        let chat: JID = (&message_info.chat).into();
+        let sender: JID = (&message_info.sender).into();
+        let message = unsafe { std::ffi::CStr::from_ptr((*ptr).message) }
+            .to_string_lossy()
+            .into_owned();
+
+        TextMessage(
+            MessageInfo {
+                id,
+                chat,
+                sender,
+                timestamp: message_info.timestamp,
+            },
+            message,
+        )
     }
 
     unsafe fn invoke_closure(
@@ -153,7 +200,7 @@ impl CallbackTranslator for EventHandler {
 define_callback!(add_event_handler_impl, C_AddEventHandler, EventHandler);
 pub fn add_event_handler<F>(handler: F)
 where
-    F: FnMut(String) + 'static,
+    F: FnMut(TextMessage) + 'static,
 {
     add_event_handler_impl(handler)
 }
@@ -195,18 +242,19 @@ pub fn send_message(jid: &JID, message: &str) {
 }
 
 pub fn get_all_contacts() -> HashMap<JID, Contact> {
-    let mut contacts_map: HashMap<JID, Contact> = HashMap::new();
-
     let result = unsafe { C_GetAllContacts() };
 
     let jids = unsafe { std::slice::from_raw_parts(result.jids, result.count as usize) };
     let contacts = unsafe { std::slice::from_raw_parts(result.contacts, result.count as usize) };
 
-    for (jid, contact) in jids.iter().zip(contacts.iter()) {
-        let jid: JID = jid.into();
-        let contact: Contact = contact.into();
-        contacts_map.insert(jid, contact);
-    }
-
+    let contacts_map: HashMap<JID, Contact> = jids
+        .iter()
+        .zip(contacts.iter())
+        .map(|(jid, contact)| {
+            let jid = JID::from(jid);
+            let contact = Contact::from(contact);
+            (jid, contact)
+        })
+        .collect();
     contacts_map
 }

@@ -6,7 +6,8 @@ edition = "2024"
 [dependencies]
 log = "0.4"
 whatsrust = { path = "whatsrust" }
-turbosql = "0.12.0"
+rusqlite = { version = "0.34.0", features = ["bundled"] }
+# turbosql = "0.12.0"
 ratatui = "0.29.0"
 ratatui-image = "5.0.0"
 tui-textarea = "0.7.0"
