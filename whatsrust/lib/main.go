@@ -7,11 +7,11 @@ package main
 #include <stdio.h>
 
 typedef struct {
-    char* user;
-    uint8_t raw_agent;
-    uint16_t device;
-    uint16_t integrator;
-char* server;
+	char* user;
+	uint8_t raw_agent;
+	uint16_t device;
+	uint16_t integrator;
+	char* server;
 } CJID;
 
 typedef struct {
@@ -41,19 +41,22 @@ typedef struct {
 	char* message;
 } TextMessage;
 
-// typedef struct {
-//
-// } Chat
 
 typedef void (*QrCallback)(const char*, void*);
 static void callQrCallback(QrCallback cb, const char* code, void* user_data) {
 	cb(code, user_data);
 }
 
-typedef void (*EventHandler)(const TextMessage*, void*);
-static void callEventHandler(EventHandler cb, const TextMessage* data, void* user_data) {
-    cb(data, user_data);
+typedef void (*MessageHandlerCallback)(const TextMessage*, void*);
+typedef struct {
+	MessageHandlerCallback callback;
+	void* user_data;
+} MessageHandler;
+static void callMessageHandler(MessageHandler hdl, const TextMessage* data) {
+    hdl.callback(data, hdl.user_data);
 }
+
+typdef void (*SyncCompleteCallback)(void*);
 
 typedef void (*LogHandler)(const char*, uint8_t);
 static void callLogInfo(LogHandler cb, const char* msg, uint8_t level) {
@@ -69,6 +72,7 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/appstate"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/proto/waWeb"
 	"go.mau.fi/whatsmeow/store/sqlstore"
@@ -81,6 +85,7 @@ var client *whatsmeow.Client
 var qrChan <-chan whatsmeow.QRChannelItem
 
 var logHandler C.LogHandler
+var messageHandler C.MessageHandler
 
 func LOG_LEVEL(level int, msg string, args ...any) {
 	if logHandler != nil {
@@ -161,6 +166,14 @@ func C_SetLogHandler(handler C.LogHandler) {
 	logHandler = handler
 }
 
+//export C_SetMessageHandler
+func C_SetMessageHandler(callback C.MessageHandlerCallback, data unsafe.Pointer) {
+	messageHandler = C.MessageHandler{
+		callback:  callback,
+		user_data: data,
+	}
+}
+
 //export C_NewClient
 func C_NewClient(dbPath *C.char) {
 	goPath := C.GoString(dbPath)
@@ -202,7 +215,12 @@ func ParseWebMessageInfo(selfJid types.JID, chatJid types.JID, webMsg *waWeb.Web
 	return &info
 }
 
-func HandleMessage(info types.MessageInfo, msg *waE2E.Message, handler C.EventHandler, user_data unsafe.Pointer) {
+func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
+	// if messageHandler == nil {
+	// 	LOG_ERROR("Message handler is not set")
+	// 	return
+	// }
+
 	chat := info.Chat
 	sender := info.Sender
 	timestamp := info.Timestamp.Unix()
@@ -226,7 +244,7 @@ func HandleMessage(info types.MessageInfo, msg *waE2E.Message, handler C.EventHa
 		}
 
 		defer C.free(unsafe.Pointer(cmsg))
-		C.callEventHandler(handler, &data, user_data)
+		C.callMessageHandler(messageHandler, &data)
 	}
 	if msg.ExtendedTextMessage != nil {
 		// LOG_WARN("ExtendedTextMessage: %v", msg.ExtendedTextMessage)
@@ -248,24 +266,24 @@ func HandleMessage(info types.MessageInfo, msg *waE2E.Message, handler C.EventHa
 			message: cmsg,
 		}
 		defer C.free(unsafe.Pointer(cmsg))
-		C.callEventHandler(handler, &data, user_data)
+		C.callMessageHandler(messageHandler, &data)
 	}
 }
 
-//export C_AddEventHandler
-func C_AddEventHandler(handler C.EventHandler, user_data unsafe.Pointer) {
-	client.AddEventHandler(func(evt any) {
-		switch evt.(type) {
+//export C_AddEventHandlers
+func C_AddEventHandlers() {
+	client.AddEventHandler(func(rawEvt any) {
+		switch evt := rawEvt.(type) {
 		case *events.AppStateSyncComplete:
-			// C.callSyncComplete
-			LOG_ERROR("FINISHEDDDDDDDDD ============")
+			LOG_ERROR("AppStateSyncComplete %v", evt)
+			if evt.Name == appstate.WAPatchRegular {
+
+			}
 
 		case *events.Message:
-			evt := evt.(*events.Message)
-			HandleMessage(evt.Info, evt.Message, handler, user_data)
+			HandleMessage(evt.Info, evt.Message)
 
 		case *events.HistorySync:
-			evt := evt.(*events.HistorySync)
 			selfJid := *client.Store.ID
 
 			percent := evt.Data.GetProgress()
@@ -285,7 +303,7 @@ func C_AddEventHandler(handler C.EventHandler, user_data unsafe.Pointer) {
 						continue
 					}
 
-					HandleMessage(*messageInfo, message, handler, user_data)
+					HandleMessage(*messageInfo, message)
 				}
 			}
 		}

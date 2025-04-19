@@ -139,16 +139,17 @@ struct CContactsMapResult {
 pub type LogFn = extern "C" fn(*const c_char, u8);
 
 type CQrCallback = extern "C" fn(*const c_char, *mut c_void);
-type CEventHandler = extern "C" fn(*const CTextMessage, *mut c_void);
+type CMessageCallback = extern "C" fn(*const CTextMessage, *mut c_void);
 unsafe extern "C" {
     fn C_NewClient(db_path: *const c_char);
     fn C_Connect(qr_cb: CQrCallback, data: *mut c_void) -> bool;
     fn C_SendMessage(jid: *const CJID, message: *const c_char);
-    fn C_AddEventHandler(handler: CEventHandler, data: *mut c_void);
+    fn C_AddEventHandlers();
     fn C_GetAllContacts() -> CContactsMapResult;
     fn C_Disconnect();
     fn C_PairPhone(phone: *const c_char) -> *const c_char;
 
+    fn C_SetMessageHandler(message_cb: CMessageCallback, data: *mut c_void);
     fn C_SetLogHandler(log_fn: LogFn);
     // fn (log_fn: extern "C" fn(*const c_char, *mut c_void), data: *mut c_void);
 }
@@ -162,6 +163,10 @@ pub fn pair_phone(phone: &str) -> String {
     result_str
 }
 
+pub fn add_event_handlers() {
+    unsafe { C_AddEventHandlers() }
+}
+
 pub fn set_log_handler(log_fn: LogFn) {
     unsafe { C_SetLogHandler(log_fn) }
 }
@@ -171,8 +176,8 @@ pub fn new_client(db_path: &str) {
     unsafe { C_NewClient(db_path_c.as_ptr()) }
 }
 
-struct EventHandler;
-impl CallbackTranslator for EventHandler {
+struct SetMessageHandler;
+impl CallbackTranslator for SetMessageHandler {
     type CType = *const CTextMessage;
     type RustType = TextMessage;
 
@@ -205,14 +210,25 @@ impl CallbackTranslator for EventHandler {
         closure(rust_value);
     }
 }
-
-define_callback!(add_event_handler_impl, C_AddEventHandler, EventHandler);
-pub fn add_event_handler<F>(handler: F)
+define_callback!(
+    set_message_handler_impl,
+    C_SetMessageHandler,
+    SetMessageHandler
+);
+pub fn set_message_handler<F>(handler: F)
 where
     F: FnMut(TextMessage) + 'static,
 {
-    add_event_handler_impl(handler)
+    set_message_handler_impl(handler)
 }
+
+// define_callback!(add_event_handler_impl, C_AddEventHandler, EventHandler);
+// pub fn add_event_handler<F>(handler: F)
+// where
+//     F: FnMut(TextMessage) + 'static,
+// {
+//     add_event_handler_impl(handler)
+// }
 
 struct QrCallback;
 impl CallbackTranslator for QrCallback {
@@ -231,7 +247,6 @@ impl CallbackTranslator for QrCallback {
         closure(rust_value);
     }
 }
-
 define_callback!(connect_impl, C_Connect, QrCallback);
 pub fn connect<F>(handler: F)
 where

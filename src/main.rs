@@ -63,7 +63,7 @@ fn main() {
     let message_queue = Arc::new(Mutex::new(Vec::<Message>::new()));
 
     let event_queue_clone = Arc::clone(&message_queue);
-    wr::add_event_handler(move |wr::TextMessage(info, text)| {
+    wr::set_message_handler(move |wr::TextMessage(info, text)| {
         let mut event_queue = event_queue_clone.lock().unwrap();
         info!("Event: {:?}", text);
 
@@ -74,6 +74,8 @@ fn main() {
 
         event_queue.push(message);
     });
+
+    wr::add_event_handlers();
 
     let mut chats = get_chats();
     let mut sorted_chats = get_sorted_chats(&chats);
