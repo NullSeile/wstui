@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     ffi::{c_char, c_void},
+    rc::Rc,
     sync::{Arc, Mutex},
 };
 
@@ -19,21 +20,23 @@ struct CJID {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct JID {
-    pub user: String,
+    pub user: Rc<str>,
     pub raw_agent: u8,
     pub device: u16,
     pub integrator: u16,
-    pub server: String,
+    pub server: Rc<str>,
 }
 
 impl From<&CJID> for JID {
     fn from(cjid: &CJID) -> Self {
         let user = unsafe { std::ffi::CStr::from_ptr(cjid.user) }
             .to_string_lossy()
-            .into_owned();
+            .into_owned()
+            .into();
         let server = unsafe { std::ffi::CStr::from_ptr(cjid.server) }
             .to_string_lossy()
-            .into_owned();
+            .into_owned()
+            .into();
 
         JID {
             user,
@@ -47,8 +50,8 @@ impl From<&CJID> for JID {
 
 impl From<&JID> for CJID {
     fn from(jid: &JID) -> Self {
-        let user = std::ffi::CString::new(jid.user.clone()).unwrap();
-        let server = std::ffi::CString::new(jid.server.clone()).unwrap();
+        let user = std::ffi::CString::new(jid.user.as_ref()).unwrap();
+        let server = std::ffi::CString::new(jid.server.as_ref()).unwrap();
 
         CJID {
             user: user.into_raw(),
@@ -75,14 +78,16 @@ struct CMessageInfo {
     chat: CJID,
     sender: CJID,
     timestamp: i64,
+    quote_id: *const c_char,
 }
 
 #[derive(Clone, Debug)]
 pub struct MessageInfo {
-    pub id: String,
+    pub id: Rc<str>,
     pub chat: JID,
     pub sender: JID,
     pub timestamp: i64,
+    pub quote_id: Option<Rc<str>>,
 }
 
 #[repr(C)]
@@ -92,32 +97,36 @@ struct CTextMessage {
 }
 
 #[derive(Clone, Debug)]
-pub struct TextMessage(pub MessageInfo, pub String);
+pub struct TextMessage(pub MessageInfo, pub Rc<str>);
 
 // Rust-friendly version
 #[derive(Clone, Debug)]
 pub struct Contact {
     pub found: bool,
-    pub first_name: String,
-    pub full_name: String,
-    pub push_name: String,
-    pub business_name: String,
+    pub first_name: Rc<str>,
+    pub full_name: Rc<str>,
+    pub push_name: Rc<str>,
+    pub business_name: Rc<str>,
 }
 
 impl From<&CContact> for Contact {
     fn from(ccontact: &CContact) -> Self {
         let first_name = unsafe { std::ffi::CStr::from_ptr(ccontact.first_name) }
             .to_string_lossy()
-            .into_owned();
+            .into_owned()
+            .into();
         let full_name = unsafe { std::ffi::CStr::from_ptr(ccontact.full_name) }
             .to_string_lossy()
-            .into_owned();
+            .into_owned()
+            .into();
         let push_name = unsafe { std::ffi::CStr::from_ptr(ccontact.push_name) }
             .to_string_lossy()
-            .into_owned();
+            .into_owned()
+            .into();
         let business_name = unsafe { std::ffi::CStr::from_ptr(ccontact.business_name) }
             .to_string_lossy()
-            .into_owned();
+            .into_owned()
+            .into();
 
         Contact {
             found: ccontact.found,
@@ -140,6 +149,8 @@ pub type LogFn = extern "C" fn(*const c_char, u8);
 
 type CQrCallback = extern "C" fn(*const c_char, *mut c_void);
 type CMessageCallback = extern "C" fn(*const CTextMessage, *mut c_void);
+type CEventCallback = extern "C" fn(*mut c_void);
+type CHistorySyncCallback = extern "C" fn(u32, *mut c_void);
 unsafe extern "C" {
     fn C_NewClient(db_path: *const c_char);
     fn C_Connect(qr_cb: CQrCallback, data: *mut c_void) -> bool;
@@ -150,8 +161,9 @@ unsafe extern "C" {
     fn C_PairPhone(phone: *const c_char) -> *const c_char;
 
     fn C_SetMessageHandler(message_cb: CMessageCallback, data: *mut c_void);
+    fn C_SetHistorySyncHandler(history_sync_cb: CHistorySyncCallback, data: *mut c_void);
     fn C_SetLogHandler(log_fn: LogFn);
-    // fn (log_fn: extern "C" fn(*const c_char, *mut c_void), data: *mut c_void);
+    fn C_SetStateSyncCompleteHandler(event_cb: CEventCallback, data: *mut c_void);
 }
 
 pub fn pair_phone(phone: &str) -> String {
@@ -185,12 +197,26 @@ impl CallbackTranslator for SetMessageHandler {
         let message_info = unsafe { &(*ptr).info };
         let id = unsafe { std::ffi::CStr::from_ptr(message_info.id) }
             .to_string_lossy()
-            .into_owned();
+            .into_owned()
+            .into();
         let chat: JID = (&message_info.chat).into();
         let sender: JID = (&message_info.sender).into();
         let message = unsafe { std::ffi::CStr::from_ptr((*ptr).message) }
             .to_string_lossy()
-            .into_owned();
+            .into_owned()
+            .into();
+
+        let c_quote_id = message_info.quote_id;
+        let quote_id = if c_quote_id.is_null() {
+            None
+        } else {
+            Some(
+                unsafe { std::ffi::CStr::from_ptr(c_quote_id) }
+                    .to_string_lossy()
+                    .into_owned()
+                    .into(),
+            )
+        };
 
         TextMessage(
             MessageInfo {
@@ -198,6 +224,7 @@ impl CallbackTranslator for SetMessageHandler {
                 chat,
                 sender,
                 timestamp: message_info.timestamp,
+                quote_id,
             },
             message,
         )
@@ -222,13 +249,59 @@ where
     set_message_handler_impl(handler)
 }
 
-// define_callback!(add_event_handler_impl, C_AddEventHandler, EventHandler);
-// pub fn add_event_handler<F>(handler: F)
-// where
-//     F: FnMut(TextMessage) + 'static,
-// {
-//     add_event_handler_impl(handler)
-// }
+struct HistorySyncHandler;
+impl CallbackTranslator for HistorySyncHandler {
+    type CType = u32;
+    type RustType = u32;
+
+    unsafe fn to_rust(ptr: Self::CType) -> Self::RustType {
+        ptr
+    }
+
+    unsafe fn invoke_closure(
+        closure: &mut Box<dyn FnMut(Self::RustType)>,
+        rust_value: Self::RustType,
+    ) {
+        closure(rust_value);
+    }
+}
+define_callback!(
+    history_sync_handler_impl,
+    C_SetHistorySyncHandler,
+    HistorySyncHandler
+);
+pub fn set_history_sync_handler<F>(handler: F)
+where
+    F: FnMut(u32) + 'static,
+{
+    history_sync_handler_impl(handler)
+}
+
+struct StateSyncCompleteHandler;
+impl CallbackTranslator for StateSyncCompleteHandler {
+    type CType = ();
+    type RustType = ();
+
+    unsafe fn to_rust(_ptr: Self::CType) -> Self::RustType {}
+
+    unsafe fn invoke_closure(
+        closure: &mut Box<dyn FnMut(Self::RustType)>,
+        _rust_value: Self::RustType,
+    ) {
+        closure(())
+    }
+}
+define_callback!(
+    state_sync_complete_handler_impl,
+    C_SetStateSyncCompleteHandler,
+    StateSyncCompleteHandler where CType is ()
+);
+pub fn set_state_sync_complete_handler<F>(mut handler: F)
+where
+    F: FnMut() + 'static,
+{
+    state_sync_complete_handler_impl(move |_| handler())
+}
 
 struct QrCallback;
 impl CallbackTranslator for QrCallback {

@@ -5,13 +5,12 @@ fn main() {
 
     let status = Command::new("go")
         .env("CGO_ENABLED", "1")
-        .env("CGO_CFLAGS", "-I./lib")
+        // .env("CGO_CFLAGS", "-I./lib")
         .args([
             "build",
             "-C",
             "./lib",
             "-buildmode=c-archive",
-            // "-compiler=gccgo",
             // "-buildmode=c-shared",
             "-o",
             out_dir.join("libgo.a").to_str().unwrap(),
@@ -23,8 +22,6 @@ fn main() {
     if !status.success() {
         panic!("Failed to build go library:\n {:?}", status);
     }
-
-    // println!("cargo::error=pupalksjd'flk");
 
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=lib");

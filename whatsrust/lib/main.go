@@ -22,7 +22,6 @@ typedef struct {
 	const char* business_name;
 } CContact;
 
-
 typedef struct {
 	CJID* jids;
 	CContact* contacts;
@@ -34,6 +33,7 @@ typedef struct {
 	CJID chat;
 	CJID sender;
 	int64_t timestamp;
+	char* quoteID;
 } MessageInfo;
 
 typedef struct {
@@ -56,7 +56,23 @@ static void callMessageHandler(MessageHandler hdl, const TextMessage* data) {
     hdl.callback(data, hdl.user_data);
 }
 
-typdef void (*SyncCompleteCallback)(void*);
+typedef void (*StateSyncCompleteCallback)(void*);
+typedef struct {
+	StateSyncCompleteCallback callback;
+	void* user_data;
+} StateSyncCompleteHandler;
+static void callStateSyncComplete(StateSyncCompleteHandler hdl) {
+	hdl.callback(hdl.user_data);
+}
+
+typedef void (*HistorySyncCallback)(uint32_t, void*);
+typedef struct {
+	HistorySyncCallback callback;
+	void* user_data;
+} HistorySyncHandler;
+static void callHistorySync(HistorySyncHandler hdl, uint32_t percent) {
+	hdl.callback(percent, hdl.user_data);
+}
 
 typedef void (*LogHandler)(const char*, uint8_t);
 static void callLogInfo(LogHandler cb, const char* msg, uint8_t level) {
@@ -67,6 +83,11 @@ import "C"
 import (
 	"context"
 	"fmt"
+	"math"
+	"mime"
+	"os"
+	"slices"
+	"sort"
 	"time"
 	"unsafe"
 
@@ -86,6 +107,8 @@ var qrChan <-chan whatsmeow.QRChannelItem
 
 var logHandler C.LogHandler
 var messageHandler C.MessageHandler
+var StateSyncCompleteHandler C.StateSyncCompleteHandler
+var historySyncHandler C.HistorySyncHandler
 
 func LOG_LEVEL(level int, msg string, args ...any) {
 	if logHandler != nil {
@@ -166,9 +189,25 @@ func C_SetLogHandler(handler C.LogHandler) {
 	logHandler = handler
 }
 
+//export C_SetHistorySyncHandler
+func C_SetHistorySyncHandler(callback C.HistorySyncCallback, data unsafe.Pointer) {
+	historySyncHandler = C.HistorySyncHandler{
+		callback:  callback,
+		user_data: data,
+	}
+}
+
 //export C_SetMessageHandler
 func C_SetMessageHandler(callback C.MessageHandlerCallback, data unsafe.Pointer) {
 	messageHandler = C.MessageHandler{
+		callback:  callback,
+		user_data: data,
+	}
+}
+
+//export C_SetStateSyncCompleteHandler
+func C_SetStateSyncCompleteHandler(callback C.StateSyncCompleteCallback, data unsafe.Pointer) {
+	StateSyncCompleteHandler = C.StateSyncCompleteHandler{
 		callback:  callback,
 		user_data: data,
 	}
@@ -215,28 +254,43 @@ func ParseWebMessageInfo(selfJid types.JID, chatJid types.JID, webMsg *waWeb.Web
 	return &info
 }
 
-func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
-	// if messageHandler == nil {
-	// 	LOG_ERROR("Message handler is not set")
-	// 	return
-	// }
+func SliceIndex(list []string, value string, defaultValue int) int {
+	index := slices.Index(list, value)
+	if index == -1 {
+		index = defaultValue
+	}
+	return index
+}
 
+func ExtensionByType(mimeType string, defaultExt string) string {
+	ext := defaultExt
+	exts, extErr := mime.ExtensionsByType(mimeType)
+	if extErr == nil && len(exts) > 0 {
+		// prefer common extensions over less common (.jpe, etc) returned by mime library
+		preferredExts := []string{".jpg", ".jpeg"}
+		sort.Slice(exts, func(i, j int) bool {
+			return SliceIndex(preferredExts, exts[i], math.MaxInt32) < SliceIndex(preferredExts, exts[j], math.MaxInt32)
+		})
+		ext = exts[0]
+	}
+
+	return ext
+}
+
+func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
 	chat := info.Chat
 	sender := info.Sender
 	timestamp := info.Timestamp.Unix()
-
-	// LOG_WARN("Chat: %v Sender: %v", chat, sender)
 
 	cinfo := C.MessageInfo{
 		id:        C.CString(info.ID),
 		chat:      jidToC(chat),
 		sender:    jidToC(sender),
 		timestamp: C.int64_t(timestamp),
+		quoteID:   nil,
 	}
 
-	// LOG_WARN("Message: %v", msg)
 	if msg.Conversation != nil {
-		// LOG_WARN("Message: %v", msg.Conversation)
 		cmsg := C.CString(msg.GetConversation())
 		data := C.TextMessage{
 			info:    cinfo,
@@ -247,20 +301,56 @@ func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
 		C.callMessageHandler(messageHandler, &data)
 	}
 	if msg.ExtendedTextMessage != nil {
-		// LOG_WARN("ExtendedTextMessage: %v", msg.ExtendedTextMessage)
 		text := msg.GetExtendedTextMessage().GetText()
 		context_info := msg.GetExtendedTextMessage().GetContextInfo()
 		if context_info != nil {
-			// LOG_WARN("ContextInfo: %v", context_info)
-			// quotedID := context_info.GetStanzaID()
-			quoted_message := context_info.GetQuotedMessage()
-			if quoted_message != nil {
-				// LOG_WARN("QuotedMessage: %v", quoted_message)
-				quoted_text := quoted_message.GetConversation()
-				text = fmt.Sprintf("(%s) %s", quoted_text, text)
-			}
+			cinfo.quoteID = C.CString(context_info.GetStanzaID())
 		}
 		cmsg := C.CString(text)
+		data := C.TextMessage{
+			info:    cinfo,
+			message: cmsg,
+		}
+		defer C.free(unsafe.Pointer(cmsg))
+		C.callMessageHandler(messageHandler, &data)
+	}
+
+	if msg.ImageMessage != nil {
+		img := msg.GetImageMessage()
+		if img == nil {
+			LOG_ERROR("ImageMessage is nil")
+			return
+		}
+
+		ext := ExtensionByType(img.GetMimetype(), ".jpg")
+		text := img.GetCaption()
+
+		// imgData, err := client.Download(img)
+
+		ci := img.GetContextInfo()
+		if ci != nil {
+			cinfo.quoteID = C.CString(ci.GetStanzaID())
+		}
+
+		filePath := fmt.Sprintf("%s%s", info.ID, ext)
+		imageData, err := client.Download(img)
+
+		if err != nil {
+			LOG_ERROR("Error downloading image: %v", err)
+		} else {
+			file, err := os.Create(filePath)
+			defer file.Close()
+			if err != nil {
+				LOG_ERROR("Error creating file: %v", err)
+			} else {
+				_, err := file.Write(imageData)
+				if err != nil {
+					LOG_ERROR("Error writing to file: %v", err)
+				}
+			}
+		}
+
+		cmsg := C.CString(fmt.Sprintf("Image (%s): %s", filePath, text))
 		data := C.TextMessage{
 			info:    cinfo,
 			message: cmsg,
@@ -275,9 +365,12 @@ func C_AddEventHandlers() {
 	client.AddEventHandler(func(rawEvt any) {
 		switch evt := rawEvt.(type) {
 		case *events.AppStateSyncComplete:
-			LOG_ERROR("AppStateSyncComplete %v", evt)
+			LOG_ERROR("AppStateStateSyncComplete %v", evt)
 			if evt.Name == appstate.WAPatchRegular {
-
+				LOG_ERROR("AppStateStateSyncComplete %v", evt)
+				if StateSyncCompleteHandler.callback != nil {
+					C.callStateSyncComplete(StateSyncCompleteHandler)
+				}
 			}
 
 		case *events.Message:
@@ -287,7 +380,10 @@ func C_AddEventHandlers() {
 			selfJid := *client.Store.ID
 
 			percent := evt.Data.GetProgress()
-			LOG_WARN("History sync progress: %d %%", percent)
+			// LOG_WARN("History sync progress: %d %%", percent)
+			if historySyncHandler.callback != nil {
+				C.callHistorySync(historySyncHandler, C.uint32_t(percent))
+			}
 
 			conversations := evt.Data.GetConversations()
 			for _, conversation := range conversations {

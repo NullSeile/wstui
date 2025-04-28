@@ -1,16 +1,24 @@
+use list::{WidgetList, WidgetListState};
 use log::{error, info};
 use ratatui::{
     Frame,
+    buffer::Buffer,
     crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     layout::{Constraint, Layout, Rect},
-    style::Style,
-    widgets::{Block, List, ListState},
+    style::{Style, Stylize},
+    text::Line,
+    widgets::{Block, Paragraph, Widget, Wrap},
 };
-use wstui::*;
+use wstui::{
+    list::{ListDirection, WidgetListItem},
+    *,
+};
 
+use chrono::DateTime;
 use clap::Parser;
 use std::{
     ffi::c_char,
+    rc::Rc,
     sync::{Arc, Mutex},
 };
 use tui_textarea::TextArea;
@@ -34,7 +42,7 @@ extern "C" fn log_handler(msg: *const c_char, level: u8) {
         3 => log::Level::Debug,
         _ => log::Level::Trace,
     };
-    log::log!(level, "{}", msg);
+    log::log!(level, "{msg}");
 }
 
 fn main() {
@@ -44,10 +52,45 @@ fn main() {
 
     let mut messages = MessagesStorage::new();
 
+    let mut chats = ChatList::new();
+    let mut sorted_chats = Vec::new();
+
     let _ = tui_logger::init_logger(tui_logger::LevelFilter::Debug);
     tui_logger::set_default_level(tui_logger::LevelFilter::Debug);
 
     wr::set_log_handler(log_handler);
+
+    let history_sync_percent = Arc::new(Mutex::new(None));
+    let history_sync_percent_clone = Arc::clone(&history_sync_percent);
+    wr::set_history_sync_handler(move |percent| {
+        let mut history_sync_percent = history_sync_percent_clone.lock().unwrap();
+        *history_sync_percent = Some(percent);
+    });
+
+    let event_queue = Arc::new(Mutex::new(Vec::<AppEvent>::new()));
+    let event_queue_clone = Arc::clone(&event_queue);
+    wr::set_state_sync_complete_handler(move || {
+        let mut event_queue = event_queue_clone.lock().unwrap();
+        event_queue.push(AppEvent::StateSyncComplete);
+        info!("State sync complete");
+        // chats = get_chats();
+        // sorted_chats = get_sorted_chats(&chats);
+        // info!("Chats: {:?}", chats);
+    });
+
+    let message_queue = Rc::new(Mutex::new(Vec::<Message>::new()));
+    let message_queue_clone = Rc::clone(&message_queue);
+    wr::set_message_handler(move |wr::TextMessage(info, text)| {
+        let mut message_queue = message_queue_clone.lock().unwrap();
+        info!("Event: {text:?}");
+
+        let message = Message {
+            info: info.clone(),
+            message: MessageType::TextMessage(text.clone()),
+        };
+
+        message_queue.push(message);
+    });
 
     info!("Starting WhatsRust...");
 
@@ -60,40 +103,12 @@ fn main() {
         }
     });
 
-    let message_queue = Arc::new(Mutex::new(Vec::<Message>::new()));
-
-    let event_queue_clone = Arc::clone(&message_queue);
-    wr::set_message_handler(move |wr::TextMessage(info, text)| {
-        let mut event_queue = event_queue_clone.lock().unwrap();
-        info!("Event: {:?}", text);
-
-        let message = Message {
-            info: info.clone(),
-            message: MessageType::TextMessage(text.clone()),
-        };
-
-        event_queue.push(message);
-    });
-
+    chats = get_chats();
+    sorted_chats = get_sorted_chats(&chats);
     wr::add_event_handlers();
 
-    let mut chats = get_chats();
-    let mut sorted_chats = get_sorted_chats(&chats);
     let mut selected_chat_index = None;
     let mut selected_chat_jid = None;
-
-    // let mut selected_chat_index = Some(0);
-    // let mut selected_chat_jid = sorted_chats
-    //     .get(selected_chat_index.unwrap())
-    //     .map(|(jid, _)| *jid)
-    //     .cloned();
-
-    // let (mut selected_chat_index, mut selected_chat_jid) = chats
-    //     .keys()
-    //     .enumerate()
-    //     .find(|(_, jid)| jid.user == "34693729055")
-    //     .map(|(i, jid)| (Some(i), Some(jid.clone())))
-    //     .unwrap_or((None, None));
 
     let mut terminal = ratatui::init();
 
@@ -108,9 +123,19 @@ fn main() {
 
     loop {
         {
-            let mut event_queue = message_queue.lock().unwrap();
-            while let Some(msg) = event_queue.pop() {
-                info!("Event: {:?}", msg);
+            let mut event_queue = event_queue.lock().unwrap();
+            while let Some(event) = event_queue.pop() {
+                match event {
+                    AppEvent::StateSyncComplete => {
+                        chats = get_chats();
+                        sorted_chats = get_sorted_chats(&chats);
+                    }
+                }
+            }
+
+            let mut message_queue = message_queue.lock().unwrap();
+            while let Some(msg) = message_queue.pop() {
+                info!("Event: {msg:?}");
 
                 let chat = &msg.info.chat;
                 let entry = chats.iter_mut().find(|(jid, _)| *jid == chat);
@@ -124,7 +149,6 @@ fn main() {
                         entry.last_message_time = Some(msg.info.timestamp);
                     }
                 } else {
-                    error!("Chat not found: {:?}", chat);
                     // chats.insert(
                     //     chat.clone(),
                     //     ChatEntry {
@@ -140,22 +164,32 @@ fn main() {
                         .position(|(jid2, _)| *jid2 == current_jid);
                 }
 
-                messages.entry(chat.clone()).or_default().push(msg);
+                messages
+                    .entry(chat.clone())
+                    .or_default()
+                    .insert(msg.info.id.clone(), msg);
             }
         }
 
         terminal
             .draw(|frame| {
-                let layout = Layout::horizontal([
+                let [contacts_area, chat_area, logs_area] = Layout::horizontal([
                     Constraint::Min(30),
                     Constraint::Percentage(50),
                     Constraint::Percentage(50),
                 ])
-                .split(frame.area());
-                let contacts_area = layout[0];
-                let chat_area = layout[1];
-                let logs_area = layout[2];
-                render_contacts(frame, selected_chat_index, &sorted_chats, contacts_area);
+                .areas(frame.area());
+
+                {
+                    let percent = history_sync_percent.lock().unwrap();
+                    render_contacts(
+                        frame,
+                        *percent,
+                        selected_chat_index,
+                        &sorted_chats,
+                        contacts_area,
+                    );
+                }
                 render_chat(
                     frame,
                     selected_chat_jid.clone(),
@@ -217,6 +251,65 @@ fn main() {
     wr::disconnect();
 }
 
+#[derive(Debug, Clone)]
+struct MessageWidget {
+    msg: Message,
+    sender_name: Rc<str>,
+    quoted_text: Option<Rc<str>>,
+}
+impl WidgetListItem for MessageWidget {
+    fn height(&self, width: usize) -> usize {
+        let header_height = if self.msg.info.quote_id.is_some() {
+            2
+        } else {
+            1
+        };
+        self.msg.message.height(width) + header_height + 1
+    }
+}
+
+impl Widget for MessageWidget {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let mut area = area;
+        area.height = self.height(area.width as usize) as u16;
+
+        let timestamp =
+            if let Some(timestamp) = DateTime::from_timestamp(self.msg.info.timestamp, 0) {
+                timestamp.to_rfc2822()
+            } else {
+                "".to_string()
+            }
+            .italic();
+
+        let sender_widget = Line::from_iter([
+            self.sender_name.to_string().into(),
+            " (".into(),
+            timestamp,
+            ")".into(),
+        ])
+        .bold();
+
+        let quote_widget = self.msg.info.quote_id.as_ref().map(|_quote_id| {
+            let quoted_text = self.quoted_text.unwrap_or_else(|| "not found".into());
+
+            Line::from(format!("> {quoted_text}").gray())
+        });
+
+        let [_padding, sender_area, quoted_area, content_area] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(if quote_widget.is_some() { 1 } else { 0 }),
+            Constraint::Min(1),
+        ])
+        .areas(area);
+
+        sender_widget.render(sender_area, buf);
+        if let Some(quoted_widget) = quote_widget {
+            quoted_widget.render(quoted_area, buf);
+        }
+        self.msg.message.clone().render(content_area, buf);
+    }
+}
 fn render_chat(
     frame: &mut Frame,
     selected_chat: Option<wr::JID>,
@@ -225,31 +318,50 @@ fn render_chat(
     input_widget: &mut TextArea,
     area: Rect,
 ) {
-    let layout =
-        Layout::vertical([Constraint::Percentage(100), Constraint::Min(1 + 2)]).split(area);
-
-    let chat_area = layout[0];
-    let input_area = layout[1];
+    let [chat_area, input_area] =
+        Layout::vertical([Constraint::Percentage(100), Constraint::Min(1 + 2)]).areas(area);
 
     if let Some(chat_jid) = selected_chat {
-        let msgs = messages.get(&chat_jid);
-
-        let items = msgs.map(|msgs| {
-            msgs.iter()
-                .map(|msg| match msg.message {
-                    MessageType::TextMessage(ref text) => {
-                        format!("{}: {}", msg.info.sender.user, text)
-                    }
-                })
-                .collect::<Vec<_>>()
-        });
-
         let contact = chats
             .get(&chat_jid)
-            .unwrap_or_else(|| panic!("Contact not found for chat: {:?}", chat_jid));
+            .unwrap_or_else(|| panic!("Contact not found for chat: {chat_jid:?}"));
 
-        let mut list_state = ListState::default();
-        let list = List::new(items.unwrap_or_default())
+        let chat_messages_opt = messages.get(&chat_jid);
+        let items = chat_messages_opt
+            .map(|chat_messages| {
+                let mut msgs = chat_messages.values().cloned().collect::<Vec<_>>();
+                msgs.sort_by(|a, b| b.info.timestamp.cmp(&a.info.timestamp));
+
+                msgs.iter()
+                    .map(|msg| {
+                        let sender_name = if let Some(user) = chats.get(&msg.info.sender) {
+                            user.name.clone()
+                        } else {
+                            msg.info.sender.user.clone()
+                        };
+
+                        let quoted_text = msg.info.quote_id.as_ref().and_then(|quote_id| {
+                            chat_messages.get(quote_id).map(|quoted_msg| {
+                                match &quoted_msg.message {
+                                    MessageType::TextMessage(text) => text.clone(),
+                                }
+                            })
+                        });
+
+                        MessageWidget {
+                            msg: msg.clone(),
+                            sender_name,
+                            quoted_text,
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        // let mut list_state = WidgetListState::default().with_selected(Some(0));
+        let mut list_state = WidgetListState::default();
+        let list = WidgetList::new(items)
+            .direction(ListDirection::BottomToTop)
             .block(Block::bordered().title(format!("Chat with {}", contact.name)))
             .highlight_style(ratatui::style::Style::default().fg(ratatui::style::Color::Green));
         frame.render_stateful_widget(list, chat_area, &mut list_state);
@@ -258,20 +370,45 @@ fn render_chat(
     frame.render_widget(&*input_widget, input_area);
 }
 
+#[derive(Default, Clone)]
+struct ContactWidget<'a>(Line<'a>);
+impl<'a> ContactWidget<'a> {
+    pub fn new(text: Line<'a>) -> Self {
+        Self(text)
+    }
+}
+
+impl Widget for ContactWidget<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        self.0.render(area, buf)
+    }
+}
+impl WidgetListItem for ContactWidget<'_> {
+    fn height(&self, _width: usize) -> usize {
+        1
+    }
+}
+
 fn render_contacts(
     frame: &mut Frame,
+    percent: Option<u32>,
     selected_index: Option<usize>,
     sorted_chats: &Vec<(&wr::JID, &ChatEntry)>,
     area: Rect,
 ) {
     let items = sorted_chats
         .iter()
-        .map(|entry| entry.1.name.to_string())
+        .map(|entry| ContactWidget::new(entry.1.name.to_string().into()))
         .collect::<Vec<_>>();
 
-    let mut list_state = ListState::default().with_selected(Some(selected_index.unwrap_or(0)));
-    let list = List::new(items)
-        .block(Block::bordered().title("Contacts"))
+    let mut list_state =
+        WidgetListState::default().with_selected(Some(selected_index.unwrap_or(0)));
+    let list = WidgetList::new(items)
+        .block(Block::bordered().title(if let Some(p) = percent {
+            format!("Contacts ({p}%)")
+        } else {
+            "Contacts".to_string()
+        }))
         .highlight_style(ratatui::style::Style::default().fg(ratatui::style::Color::Green));
     frame.render_stateful_widget(list, area, &mut list_state);
 }

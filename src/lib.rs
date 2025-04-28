@@ -1,22 +1,29 @@
 use std::collections::HashMap;
+use std::rc::Rc;
 
+pub mod list;
+
+use chrono::DateTime;
+use list::WidgetListItem;
 use ratatui::{
     buffer::Buffer,
-    layout::Rect,
-    widgets::{Block, Borders, List, ListState, StatefulWidget, Widget},
+    layout::{Constraint, Layout, Rect},
+    style::Stylize,
+    text::Line,
+    widgets::{Block, Borders, List, ListState, Paragraph, StatefulWidget, Widget},
 };
 use tui_logger::TuiLoggerWidget;
 use whatsrust as wr;
 
-pub fn get_contact_name(contact: &wr::Contact) -> Option<String> {
+pub fn get_contact_name(contact: &wr::Contact) -> Option<Rc<str>> {
     if !contact.full_name.is_empty() {
         Some(contact.full_name.clone())
     } else if !contact.first_name.is_empty() {
         Some(contact.first_name.clone())
     } else if !contact.push_name.is_empty() {
-        Some(format!("~ {}", contact.push_name))
+        Some(format!("~ {}", contact.push_name).into())
     } else if !contact.business_name.is_empty() {
-        Some(format!("+ {}", contact.business_name.clone()))
+        Some(format!("+ {}", contact.business_name.clone()).into())
     } else {
         None
     }
@@ -30,7 +37,8 @@ pub fn get_contact_name(contact: &wr::Contact) -> Option<String> {
 // }
 
 pub struct ChatEntry {
-    pub name: String,
+    // pub jid: wr::JID,
+    pub name: Rc<str>,
     pub last_message_time: Option<i64>,
 }
 
@@ -67,7 +75,41 @@ pub fn get_sorted_chats(chats: &ChatList) -> Vec<(&wr::JID, &ChatEntry)> {
 
 #[derive(Clone, Debug)]
 pub enum MessageType {
-    TextMessage(String),
+    TextMessage(Rc<str>),
+}
+
+pub type ChatMessages = HashMap<Rc<str>, Message>;
+
+pub type MessagesStorage = HashMap<wr::JID, ChatMessages>;
+
+impl MessageType {
+    pub fn height(&self, width: usize) -> usize {
+        match self {
+            MessageType::TextMessage(text) => {
+                let lines = textwrap::wrap(text, width);
+                lines.len() as usize
+            }
+        }
+    }
+}
+
+impl Widget for MessageType {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        match self {
+            MessageType::TextMessage(text) => {
+                let lines = textwrap::wrap(&text, area.width as usize)
+                    .iter()
+                    .map(|line| Line::raw(line.to_string()))
+                    .collect::<Vec<_>>();
+                Paragraph::new(lines).render(area, buf);
+            }
+        }
+    }
+}
+
+pub struct MessageState {
+    pub messages: Option<Rc<ChatMessages>>,
+    pub chats: Rc<ChatList>,
 }
 
 #[derive(Clone, Debug)]
@@ -76,9 +118,9 @@ pub struct Message {
     pub message: MessageType,
 }
 
-pub type ChatMessages = Vec<Message>;
-
-pub type MessagesStorage = HashMap<wr::JID, ChatMessages>;
+pub enum AppEvent {
+    StateSyncComplete,
+}
 
 pub struct LogsWidgets;
 impl Widget for LogsWidgets {
