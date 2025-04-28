@@ -9,6 +9,7 @@ use ratatui::{
     text::Line,
     widgets::{Block, Paragraph, Widget, Wrap},
 };
+use ratatui_image::{Image, Resize, picker::Picker};
 use wstui::{
     list::{ListDirection, WidgetListItem},
     *,
@@ -78,17 +79,11 @@ fn main() {
         // info!("Chats: {:?}", chats);
     });
 
-    let message_queue = Rc::new(Mutex::new(Vec::<Message>::new()));
+    let message_queue = Rc::new(Mutex::new(Vec::<wr::Message>::new()));
     let message_queue_clone = Rc::clone(&message_queue);
-    wr::set_message_handler(move |wr::TextMessage(info, text)| {
+    wr::set_message_handler(move |message| {
         let mut message_queue = message_queue_clone.lock().unwrap();
-        info!("Event: {text:?}");
-
-        let message = Message {
-            info: info.clone(),
-            message: MessageType::TextMessage(text.clone()),
-        };
-
+        info!("Event: {message:?}");
         message_queue.push(message);
     });
 
@@ -251,9 +246,56 @@ fn main() {
     wr::disconnect();
 }
 
+fn message_height(message: &wr::MessageContent, width: usize) -> usize {
+    match message {
+        wr::MessageContent::Text(text) => {
+            let lines = textwrap::wrap(text, width);
+            lines.len() as usize
+        }
+        wr::MessageContent::Image(_, caption) => {
+            let lines = if let Some(caption) = caption {
+                textwrap::wrap(caption, width).len()
+            } else {
+                0
+            };
+            6 + lines
+        }
+    }
+}
+
+fn render_message(message: &wr::MessageContent, area: Rect, buf: &mut Buffer) {
+    match message {
+        wr::MessageContent::Text(text) => {
+            let lines = textwrap::wrap(text, area.width as usize)
+                .iter()
+                .map(|line| Line::raw(line.to_string()))
+                .collect::<Vec<_>>();
+            Paragraph::new(lines).render(area, buf);
+        }
+        wr::MessageContent::Image(path, caption) => {
+            let image_src = image::ImageReader::open(path.to_string())
+                .unwrap()
+                .decode()
+                .unwrap();
+
+            let picker = Picker::from_query_stdio().unwrap();
+
+            let mut image_static = picker
+                .new_protocol(
+                    image_src,
+                    Rect::new(0, 0, area.width, 6),
+                    Resize::Scale(None),
+                )
+                .unwrap();
+
+            Image::new(&mut image_static).render(area, buf);
+        }
+    };
+}
+
 #[derive(Debug, Clone)]
 struct MessageWidget {
-    msg: Message,
+    msg: wr::Message,
     sender_name: Rc<str>,
     quoted_text: Option<Rc<str>>,
 }
@@ -264,7 +306,7 @@ impl WidgetListItem for MessageWidget {
         } else {
             1
         };
-        self.msg.message.height(width) + header_height + 1
+        message_height(&self.msg.message, width) + header_height + 1
     }
 }
 
@@ -307,7 +349,7 @@ impl Widget for MessageWidget {
         if let Some(quoted_widget) = quote_widget {
             quoted_widget.render(quoted_area, buf);
         }
-        self.msg.message.clone().render(content_area, buf);
+        render_message(&self.msg.message, content_area, buf);
     }
 }
 fn render_chat(
@@ -343,7 +385,10 @@ fn render_chat(
                         let quoted_text = msg.info.quote_id.as_ref().and_then(|quote_id| {
                             chat_messages.get(quote_id).map(|quoted_msg| {
                                 match &quoted_msg.message {
-                                    MessageType::TextMessage(text) => text.clone(),
+                                    wr::MessageContent::Text(text) => text.clone(),
+                                    wr::MessageContent::Image(path, caption) => {
+                                        format!("Image: {path} Caption: {caption:?}").into()
+                                    }
                                 }
                             })
                         });

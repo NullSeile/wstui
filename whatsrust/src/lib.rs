@@ -92,12 +92,46 @@ pub struct MessageInfo {
 
 #[repr(C)]
 struct CTextMessage {
+    text: *const c_char,
+}
+
+#[repr(C)]
+struct CImageMessage {
+    path: *const c_char,
+    caption: *const c_char,
+}
+
+#[repr(C)]
+struct CMessage {
     info: CMessageInfo,
-    message: *const c_char,
+    message_type: i8,
+    message: *const c_void,
+}
+
+enum MessageType {
+    Text = 0,
+    Image = 1,
+}
+
+fn get_message_type(message_type: i8) -> MessageType {
+    match message_type {
+        0 => MessageType::Text,
+        1 => MessageType::Image,
+        _ => panic!("Unknown message type"),
+    }
 }
 
 #[derive(Clone, Debug)]
-pub struct TextMessage(pub MessageInfo, pub Rc<str>);
+pub enum MessageContent {
+    Text(Rc<str>),
+    Image(Rc<str>, Option<Rc<str>>),
+}
+
+#[derive(Clone, Debug)]
+pub struct Message {
+    pub info: MessageInfo,
+    pub message: MessageContent,
+}
 
 // Rust-friendly version
 #[derive(Clone, Debug)]
@@ -148,7 +182,7 @@ struct CContactsMapResult {
 pub type LogFn = extern "C" fn(*const c_char, u8);
 
 type CQrCallback = extern "C" fn(*const c_char, *mut c_void);
-type CMessageCallback = extern "C" fn(*const CTextMessage, *mut c_void);
+type CMessageCallback = extern "C" fn(*const CMessage, *mut c_void);
 type CEventCallback = extern "C" fn(*mut c_void);
 type CHistorySyncCallback = extern "C" fn(u32, *mut c_void);
 unsafe extern "C" {
@@ -190,23 +224,19 @@ pub fn new_client(db_path: &str) {
 
 struct SetMessageHandler;
 impl CallbackTranslator for SetMessageHandler {
-    type CType = *const CTextMessage;
-    type RustType = TextMessage;
+    type CType = *const CMessage;
+    type RustType = Message;
 
     unsafe fn to_rust(ptr: Self::CType) -> Self::RustType {
-        let message_info = unsafe { &(*ptr).info };
-        let id = unsafe { std::ffi::CStr::from_ptr(message_info.id) }
+        let msg = unsafe { &(*ptr) };
+        let id = unsafe { std::ffi::CStr::from_ptr(msg.info.id) }
             .to_string_lossy()
             .into_owned()
             .into();
-        let chat: JID = (&message_info.chat).into();
-        let sender: JID = (&message_info.sender).into();
-        let message = unsafe { std::ffi::CStr::from_ptr((*ptr).message) }
-            .to_string_lossy()
-            .into_owned()
-            .into();
+        let chat: JID = (&msg.info.chat).into();
+        let sender: JID = (&msg.info.sender).into();
 
-        let c_quote_id = message_info.quote_id;
+        let c_quote_id = msg.info.quote_id;
         let quote_id = if c_quote_id.is_null() {
             None
         } else {
@@ -218,16 +248,48 @@ impl CallbackTranslator for SetMessageHandler {
             )
         };
 
-        TextMessage(
-            MessageInfo {
+        let message = match get_message_type(msg.message_type) {
+            MessageType::Text => {
+                let text_message = unsafe { &*(msg.message as *const CTextMessage) };
+
+                let message = unsafe { std::ffi::CStr::from_ptr(text_message.text) }
+                    .to_string_lossy()
+                    .into_owned()
+                    .into();
+                MessageContent::Text(message)
+            }
+            MessageType::Image => {
+                let image_message = unsafe { &*(msg.message as *const CImageMessage) };
+
+                let path = unsafe { std::ffi::CStr::from_ptr(image_message.path) }
+                    .to_string_lossy()
+                    .into_owned()
+                    .into();
+
+                let caption = if image_message.caption.is_null() {
+                    None
+                } else {
+                    Some(
+                        unsafe { std::ffi::CStr::from_ptr(image_message.caption) }
+                            .to_string_lossy()
+                            .into_owned()
+                            .into(),
+                    )
+                };
+                MessageContent::Image(path, caption)
+            }
+        };
+
+        Message {
+            info: MessageInfo {
                 id,
                 chat,
                 sender,
-                timestamp: message_info.timestamp,
+                timestamp: msg.info.timestamp,
                 quote_id,
             },
             message,
-        )
+        }
     }
 
     unsafe fn invoke_closure(
@@ -244,7 +306,7 @@ define_callback!(
 );
 pub fn set_message_handler<F>(handler: F)
 where
-    F: FnMut(TextMessage) + 'static,
+    F: FnMut(Message) + 'static,
 {
     set_message_handler_impl(handler)
 }

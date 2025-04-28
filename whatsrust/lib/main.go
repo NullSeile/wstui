@@ -37,22 +37,31 @@ typedef struct {
 } MessageInfo;
 
 typedef struct {
-	MessageInfo info;
-	char* message;
+	char* text;
 } TextMessage;
 
+typedef struct {
+	char* path;
+	char* caption;
+} ImageMessage;
+
+typedef struct {
+	MessageInfo info;
+	int8_t messageType;
+	void* message;
+} Message;
 
 typedef void (*QrCallback)(const char*, void*);
 static void callQrCallback(QrCallback cb, const char* code, void* user_data) {
 	cb(code, user_data);
 }
 
-typedef void (*MessageHandlerCallback)(const TextMessage*, void*);
+typedef void (*MessageHandlerCallback)(const Message*, void*);
 typedef struct {
 	MessageHandlerCallback callback;
 	void* user_data;
 } MessageHandler;
-static void callMessageHandler(MessageHandler hdl, const TextMessage* data) {
+static void callMessageHandler(MessageHandler hdl, const Message* data) {
     hdl.callback(data, hdl.user_data);
 }
 
@@ -277,6 +286,11 @@ func ExtensionByType(mimeType string, defaultExt string) string {
 	return ext
 }
 
+const (
+	MessageTypeText = iota
+	MessageTypeImage
+)
+
 func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
 	chat := info.Chat
 	sender := info.Sender
@@ -291,28 +305,43 @@ func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
 	}
 
 	if msg.Conversation != nil {
-		cmsg := C.CString(msg.GetConversation())
-		data := C.TextMessage{
-			info:    cinfo,
-			message: cmsg,
+		ctext := C.CString(msg.GetConversation())
+		defer C.free(unsafe.Pointer(ctext))
+
+		content := (*C.TextMessage)(C.malloc(C.sizeof_TextMessage))
+		content.text = ctext
+		defer C.free(unsafe.Pointer(content))
+
+		message := C.Message{
+			info:        cinfo,
+			messageType: C.int8_t(MessageTypeText),
+			message:     unsafe.Pointer(content),
 		}
 
-		defer C.free(unsafe.Pointer(cmsg))
-		C.callMessageHandler(messageHandler, &data)
+		C.callMessageHandler(messageHandler, &message)
 	}
 	if msg.ExtendedTextMessage != nil {
 		text := msg.GetExtendedTextMessage().GetText()
 		context_info := msg.GetExtendedTextMessage().GetContextInfo()
 		if context_info != nil {
-			cinfo.quoteID = C.CString(context_info.GetStanzaID())
+			id := context_info.GetStanzaID()
+			if id != "" {
+				cinfo.quoteID = C.CString(id)
+			}
 		}
-		cmsg := C.CString(text)
-		data := C.TextMessage{
-			info:    cinfo,
-			message: cmsg,
+		ctext := C.CString(text)
+		defer C.free(unsafe.Pointer(ctext))
+
+		content := (*C.TextMessage)(C.malloc(C.sizeof_TextMessage))
+		content.text = ctext
+		defer C.free(unsafe.Pointer(content))
+
+		message := C.Message{
+			info:        cinfo,
+			messageType: C.int8_t(MessageTypeText),
+			message:     unsafe.Pointer(content),
 		}
-		defer C.free(unsafe.Pointer(cmsg))
-		C.callMessageHandler(messageHandler, &data)
+		C.callMessageHandler(messageHandler, &message)
 	}
 
 	if msg.ImageMessage != nil {
@@ -323,16 +352,17 @@ func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
 		}
 
 		ext := ExtensionByType(img.GetMimetype(), ".jpg")
-		text := img.GetCaption()
+		caption := img.GetCaption()
 
-		// imgData, err := client.Download(img)
-
-		ci := img.GetContextInfo()
-		if ci != nil {
-			cinfo.quoteID = C.CString(ci.GetStanzaID())
+		context_info := msg.GetExtendedTextMessage().GetContextInfo()
+		if context_info != nil {
+			id := context_info.GetStanzaID()
+			if id != "" {
+				cinfo.quoteID = C.CString(id)
+			}
 		}
 
-		filePath := fmt.Sprintf("%s%s", info.ID, ext)
+		filePath := fmt.Sprintf("imgs/%s%s", info.ID, ext)
 		imageData, err := client.Download(img)
 
 		if err != nil {
@@ -350,13 +380,27 @@ func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
 			}
 		}
 
-		cmsg := C.CString(fmt.Sprintf("Image (%s): %s", filePath, text))
-		data := C.TextMessage{
-			info:    cinfo,
-			message: cmsg,
+		cpath := C.CString(filePath)
+		defer C.free(unsafe.Pointer(cpath))
+
+		// set caption or nil
+		ccaption := C.CString(caption)
+		if caption == "" {
+			ccaption = nil
 		}
-		defer C.free(unsafe.Pointer(cmsg))
-		C.callMessageHandler(messageHandler, &data)
+		defer C.free(unsafe.Pointer(ccaption))
+
+		content := (*C.ImageMessage)(C.malloc(C.sizeof_ImageMessage))
+		content.path = cpath
+		content.caption = ccaption
+		defer C.free(unsafe.Pointer(content))
+
+		message := C.Message{
+			info:        cinfo,
+			messageType: C.int8_t(MessageTypeImage),
+			message:     unsafe.Pointer(content),
+		}
+		C.callMessageHandler(messageHandler, &message)
 	}
 }
 

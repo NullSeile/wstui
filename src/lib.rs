@@ -3,17 +3,13 @@ use std::rc::Rc;
 
 pub mod list;
 
-use chrono::DateTime;
-use list::WidgetListItem;
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Layout, Rect},
-    style::Stylize,
-    text::Line,
-    widgets::{Block, Borders, List, ListState, Paragraph, StatefulWidget, Widget},
+    widgets::{Block, Borders, StatefulWidget, Widget},
 };
 use tui_logger::TuiLoggerWidget;
-use whatsrust as wr;
+use whatsrust::{self as wr};
 
 pub fn get_contact_name(contact: &wr::Contact) -> Option<Rc<str>> {
     if !contact.full_name.is_empty() {
@@ -29,15 +25,7 @@ pub fn get_contact_name(contact: &wr::Contact) -> Option<Rc<str>> {
     }
 }
 
-// pub struct ContactEntry {
-//     pub name: String,
-//     // pub chat_jid: wr::JID,
-//     // pub contact: wr::Contact,
-//     pub last_message_time: Option<i64>,
-// }
-
 pub struct ChatEntry {
-    // pub jid: wr::JID,
     pub name: Rc<str>,
     pub last_message_time: Option<i64>,
 }
@@ -73,50 +61,9 @@ pub fn get_sorted_chats(chats: &ChatList) -> Vec<(&wr::JID, &ChatEntry)> {
     entries
 }
 
-#[derive(Clone, Debug)]
-pub enum MessageType {
-    TextMessage(Rc<str>),
-}
-
-pub type ChatMessages = HashMap<Rc<str>, Message>;
+pub type ChatMessages = HashMap<Rc<str>, wr::Message>;
 
 pub type MessagesStorage = HashMap<wr::JID, ChatMessages>;
-
-impl MessageType {
-    pub fn height(&self, width: usize) -> usize {
-        match self {
-            MessageType::TextMessage(text) => {
-                let lines = textwrap::wrap(text, width);
-                lines.len() as usize
-            }
-        }
-    }
-}
-
-impl Widget for MessageType {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        match self {
-            MessageType::TextMessage(text) => {
-                let lines = textwrap::wrap(&text, area.width as usize)
-                    .iter()
-                    .map(|line| Line::raw(line.to_string()))
-                    .collect::<Vec<_>>();
-                Paragraph::new(lines).render(area, buf);
-            }
-        }
-    }
-}
-
-pub struct MessageState {
-    pub messages: Option<Rc<ChatMessages>>,
-    pub chats: Rc<ChatList>,
-}
-
-#[derive(Clone, Debug)]
-pub struct Message {
-    pub info: wr::MessageInfo,
-    pub message: MessageType,
-}
 
 pub enum AppEvent {
     StateSyncComplete,
