@@ -1,3 +1,4 @@
+use image::DynamicImage;
 use list::{WidgetList, WidgetListState};
 use log::{error, info};
 use ratatui::{
@@ -7,9 +8,9 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Style, Stylize},
     text::Line,
-    widgets::{Block, Paragraph, Widget, Wrap},
+    widgets::{Block, Paragraph, StatefulWidget, Widget, Wrap},
 };
-use ratatui_image::{Image, Resize, picker::Picker};
+use ratatui_image::{Image, Resize, picker::Picker, protocol::Protocol};
 use wstui::{
     list::{ListDirection, WidgetListItem},
     *,
@@ -18,6 +19,7 @@ use wstui::{
 use chrono::DateTime;
 use clap::Parser;
 use std::{
+    collections::HashMap,
     ffi::c_char,
     rc::Rc,
     sync::{Arc, Mutex},
@@ -107,6 +109,11 @@ fn main() {
 
     let mut terminal = ratatui::init();
 
+    let mut messages_state = WidgetListState::new(MessagesState {
+        picker: Picker::from_query_stdio().unwrap(),
+        image_cache: HashMap::new(),
+    });
+
     let mut input_widget = TextArea::default();
     input_widget.set_cursor_line_style(Style::default());
     input_widget.set_placeholder_text("Type a message...");
@@ -192,6 +199,7 @@ fn main() {
                     &chats,
                     &mut input_widget,
                     chat_area,
+                    &mut messages_state,
                 );
 
                 let logs_widget = LogsWidgets {};
@@ -263,7 +271,17 @@ fn message_height(message: &wr::MessageContent, width: usize) -> usize {
     }
 }
 
-fn render_message(message: &wr::MessageContent, area: Rect, buf: &mut Buffer) {
+struct MessagesState {
+    image_cache: HashMap<Rc<str>, Protocol>,
+    picker: Picker,
+}
+
+fn render_message(
+    message: &wr::MessageContent,
+    area: Rect,
+    buf: &mut Buffer,
+    state: &mut MessagesState,
+) {
     match message {
         wr::MessageContent::Text(text) => {
             let lines = textwrap::wrap(text, area.width as usize)
@@ -273,22 +291,33 @@ fn render_message(message: &wr::MessageContent, area: Rect, buf: &mut Buffer) {
             Paragraph::new(lines).render(area, buf);
         }
         wr::MessageContent::Image(path, caption) => {
-            let image_src = image::ImageReader::open(path.to_string())
-                .unwrap()
-                .decode()
-                .unwrap();
+            let image_static = state.image_cache.entry(path.clone()).or_insert_with(|| {
+                let image_src = image::ImageReader::open(path.to_string())
+                    .unwrap()
+                    .decode()
+                    .unwrap();
 
-            let picker = Picker::from_query_stdio().unwrap();
+                state
+                    .picker
+                    .new_protocol(
+                        image_src,
+                        Rect::new(0, 0, area.width, 6),
+                        Resize::Scale(None),
+                    )
+                    .unwrap()
+            });
 
-            let mut image_static = picker
-                .new_protocol(
-                    image_src,
-                    Rect::new(0, 0, area.width, 6),
-                    Resize::Scale(None),
-                )
-                .unwrap();
+            let [img_area, caption_area] =
+                Layout::vertical([Constraint::Length(6), Constraint::Min(0)]).areas(area);
 
-            Image::new(&mut image_static).render(area, buf);
+            Image::new(image_static).render(img_area, buf);
+            if let Some(caption) = caption {
+                let lines = textwrap::wrap(caption, area.width as usize)
+                    .iter()
+                    .map(|line| Line::raw(line.to_string()))
+                    .collect::<Vec<_>>();
+                Paragraph::new(lines).render(caption_area, buf);
+            }
         }
     };
 }
@@ -310,8 +339,9 @@ impl WidgetListItem for MessageWidget {
     }
 }
 
-impl Widget for MessageWidget {
-    fn render(self, area: Rect, buf: &mut Buffer) {
+impl StatefulWidget for MessageWidget {
+    type State = MessagesState;
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         let mut area = area;
         area.height = self.height(area.width as usize) as u16;
 
@@ -349,7 +379,7 @@ impl Widget for MessageWidget {
         if let Some(quoted_widget) = quote_widget {
             quoted_widget.render(quoted_area, buf);
         }
-        render_message(&self.msg.message, content_area, buf);
+        render_message(&self.msg.message, content_area, buf, state);
     }
 }
 fn render_chat(
@@ -359,6 +389,7 @@ fn render_chat(
     chats: &ChatList,
     input_widget: &mut TextArea,
     area: Rect,
+    state: &mut WidgetListState<MessageWidget>,
 ) {
     let [chat_area, input_area] =
         Layout::vertical([Constraint::Percentage(100), Constraint::Min(1 + 2)]).areas(area);
@@ -404,12 +435,12 @@ fn render_chat(
             .unwrap_or_default();
 
         // let mut list_state = WidgetListState::default().with_selected(Some(0));
-        let mut list_state = WidgetListState::default();
+        // let mut list_state = WidgetListState::new(MessagesState {});
         let list = WidgetList::new(items)
             .direction(ListDirection::BottomToTop)
             .block(Block::bordered().title(format!("Chat with {}", contact.name)))
             .highlight_style(ratatui::style::Style::default().fg(ratatui::style::Color::Green));
-        frame.render_stateful_widget(list, chat_area, &mut list_state);
+        frame.render_stateful_widget(list, chat_area, state);
     }
 
     frame.render_widget(&*input_widget, input_area);
@@ -423,8 +454,9 @@ impl<'a> ContactWidget<'a> {
     }
 }
 
-impl Widget for ContactWidget<'_> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
+impl StatefulWidget for ContactWidget<'_> {
+    type State = ();
+    fn render(self, area: Rect, buf: &mut Buffer, _state: &mut Self::State) {
         self.0.render(area, buf)
     }
 }

@@ -7,15 +7,15 @@ use ratatui::{
     widgets::{HighlightSpacing, StatefulWidget, Widget, block::BlockExt},
 };
 
-impl<T: WidgetListItem> Widget for WidgetList<'_, T> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        let mut state = WidgetListState::default();
-        StatefulWidget::render(self, area, buf, &mut state);
-    }
-}
+// impl<T: WidgetListItem> Widget for WidgetList<'_, T> {
+//     fn render(self, area: Rect, buf: &mut Buffer) {
+//         let mut state = WidgetListState::<T>::default();
+//         StatefulWidget::render(self, area, buf, &mut state);
+//     }
+// }
 
 impl<T: WidgetListItem> StatefulWidget for WidgetList<'_, T> {
-    type State = WidgetListState;
+    type State = WidgetListState<T>;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         buf.set_style(area, self.style);
@@ -95,7 +95,7 @@ impl<T: WidgetListItem> StatefulWidget for WidgetList<'_, T> {
             } else {
                 row_area
             };
-            item.clone().render(item_area, buf);
+            item.clone().render(item_area, buf, &mut state.inner);
 
             // for j in 0..item.content.height() {
             //     // if the item is selected, we need to display the highlight symbol:

@@ -3,10 +3,10 @@ use strum::{Display, EnumString};
 use ratatui;
 use ratatui::{
     style::{Style, Styled},
-    widgets::{Block, HighlightSpacing, Widget},
+    widgets::{Block, HighlightSpacing, StatefulWidget},
 };
 
-pub trait WidgetListItem: Widget + Clone {
+pub trait WidgetListItem: StatefulWidget + Clone {
     fn height(&self, width: usize) -> usize;
 }
 

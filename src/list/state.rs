@@ -46,12 +46,24 @@ use super::WidgetListItem;
 /// [`List`]: crate::widgets::List
 #[derive(Default, Debug, Clone, Eq, PartialEq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct WidgetListState {
+pub struct WidgetListState<T>
+where
+    T: WidgetListItem,
+{
     pub(crate) offset: usize,
     pub(crate) selected: Option<usize>,
+    pub(crate) inner: T::State,
 }
 
-impl WidgetListState {
+impl<T: WidgetListItem> WidgetListState<T> {
+    pub fn new(inner: T::State) -> Self {
+        Self {
+            offset: 0,
+            selected: None,
+            inner,
+        }
+    }
+
     /// Sets the index of the first item to be displayed
     ///
     /// This is a fluent setter method which must be chained or used as it consumes self
