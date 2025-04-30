@@ -1,6 +1,5 @@
-use image::DynamicImage;
 use list::{WidgetList, WidgetListState};
-use log::{error, info};
+use log::info;
 use ratatui::{
     Frame,
     buffer::Buffer,
@@ -8,7 +7,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Style, Stylize},
     text::Line,
-    widgets::{Block, Paragraph, StatefulWidget, Widget, Wrap},
+    widgets::{Block, Paragraph, StatefulWidget, Widget},
 };
 use ratatui_image::{Image, Resize, picker::Picker, protocol::Protocol};
 use wstui::{
@@ -16,7 +15,7 @@ use wstui::{
     *,
 };
 
-use chrono::DateTime;
+use chrono::{DateTime, Local};
 use clap::Parser;
 use std::{
     collections::HashMap,
@@ -260,8 +259,8 @@ fn message_height(message: &wr::MessageContent, width: usize) -> usize {
             let lines = textwrap::wrap(text, width);
             lines.len() as usize
         }
-        wr::MessageContent::Image(_, caption) => {
-            let lines = if let Some(caption) = caption {
+        wr::MessageContent::Image(data) => {
+            let lines = if let Some(caption) = &data.caption {
                 textwrap::wrap(caption, width).len()
             } else {
                 0
@@ -290,28 +289,37 @@ fn render_message(
                 .collect::<Vec<_>>();
             Paragraph::new(lines).render(area, buf);
         }
-        wr::MessageContent::Image(path, caption) => {
-            let image_static = state.image_cache.entry(path.clone()).or_insert_with(|| {
-                let image_src = image::ImageReader::open(path.to_string())
-                    .unwrap()
-                    .decode()
-                    .unwrap();
+        wr::MessageContent::Image(data) => {
+            let image_static = state
+                .image_cache
+                .entry(data.path.clone())
+                .or_insert_with(|| {
+                    let binding = data.path.to_string();
+                    let image_path = std::path::Path::new(&binding);
+                    if !image_path.exists() {
+                        data.download();
+                    }
 
-                state
-                    .picker
-                    .new_protocol(
-                        image_src,
-                        Rect::new(0, 0, area.width, 6),
-                        Resize::Scale(None),
-                    )
-                    .unwrap()
-            });
+                    let image_src = image::ImageReader::open(image_path)
+                        .unwrap()
+                        .decode()
+                        .unwrap();
+
+                    state
+                        .picker
+                        .new_protocol(
+                            image_src,
+                            Rect::new(0, 0, area.width, 6),
+                            Resize::Scale(None),
+                        )
+                        .unwrap()
+                });
 
             let [img_area, caption_area] =
                 Layout::vertical([Constraint::Length(6), Constraint::Min(0)]).areas(area);
 
             Image::new(image_static).render(img_area, buf);
-            if let Some(caption) = caption {
+            if let Some(caption) = &data.caption {
                 let lines = textwrap::wrap(caption, area.width as usize)
                     .iter()
                     .map(|line| Line::raw(line.to_string()))
@@ -346,8 +354,9 @@ impl StatefulWidget for MessageWidget {
         area.height = self.height(area.width as usize) as u16;
 
         let timestamp =
-            if let Some(timestamp) = DateTime::from_timestamp(self.msg.info.timestamp, 0) {
-                timestamp.to_rfc2822()
+            if let Some(datetime) = DateTime::from_timestamp(self.msg.info.timestamp, 0) {
+                let local_time: DateTime<Local> = datetime.into();
+                local_time.to_rfc2822()
             } else {
                 "".to_string()
             }
@@ -417,9 +426,11 @@ fn render_chat(
                             chat_messages.get(quote_id).map(|quoted_msg| {
                                 match &quoted_msg.message {
                                     wr::MessageContent::Text(text) => text.clone(),
-                                    wr::MessageContent::Image(path, caption) => {
-                                        format!("Image: {path} Caption: {caption:?}").into()
-                                    }
+                                    wr::MessageContent::Image(wr::ImageContent {
+                                        path,
+                                        file_id: _,
+                                        caption,
+                                    }) => format!("Image: {path} Caption: {caption:?}").into(),
                                 }
                             })
                         });
@@ -434,8 +445,6 @@ fn render_chat(
             })
             .unwrap_or_default();
 
-        // let mut list_state = WidgetListState::default().with_selected(Some(0));
-        // let mut list_state = WidgetListState::new(MessagesState {});
         let list = WidgetList::new(items)
             .direction(ListDirection::BottomToTop)
             .block(Block::bordered().title(format!("Chat with {}", contact.name)))

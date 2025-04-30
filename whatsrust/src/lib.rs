@@ -98,6 +98,7 @@ struct CTextMessage {
 #[repr(C)]
 struct CImageMessage {
     path: *const c_char,
+    file_id: *const c_char,
     caption: *const c_char,
 }
 
@@ -122,9 +123,23 @@ fn get_message_type(message_type: i8) -> MessageType {
 }
 
 #[derive(Clone, Debug)]
+pub struct ImageContent {
+    pub path: Rc<str>,
+    pub file_id: Rc<str>,
+    pub caption: Option<Rc<str>>,
+}
+
+impl ImageContent {
+    pub fn download(&self) {
+        let file_id_c = std::ffi::CString::new(self.file_id.as_ref()).unwrap();
+        unsafe { C_DownloadFile(file_id_c.as_ptr()) }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub enum MessageContent {
     Text(Rc<str>),
-    Image(Rc<str>, Option<Rc<str>>),
+    Image(ImageContent),
 }
 
 #[derive(Clone, Debug)]
@@ -193,6 +208,7 @@ unsafe extern "C" {
     fn C_GetAllContacts() -> CContactsMapResult;
     fn C_Disconnect();
     fn C_PairPhone(phone: *const c_char) -> *const c_char;
+    fn C_DownloadFile(file_id: *const c_char);
 
     fn C_SetMessageHandler(message_cb: CMessageCallback, data: *mut c_void);
     fn C_SetHistorySyncHandler(history_sync_cb: CHistorySyncCallback, data: *mut c_void);
@@ -266,6 +282,11 @@ impl CallbackTranslator for SetMessageHandler {
                     .into_owned()
                     .into();
 
+                let file_id = unsafe { std::ffi::CStr::from_ptr(image_message.file_id) }
+                    .to_string_lossy()
+                    .into_owned()
+                    .into();
+
                 let caption = if image_message.caption.is_null() {
                     None
                 } else {
@@ -276,7 +297,11 @@ impl CallbackTranslator for SetMessageHandler {
                             .into(),
                     )
                 };
-                MessageContent::Image(path, caption)
+                MessageContent::Image(ImageContent {
+                    path,
+                    file_id,
+                    caption,
+                })
             }
         };
 

@@ -42,6 +42,7 @@ typedef struct {
 
 typedef struct {
 	char* path;
+	char* fileID;
 	char* caption;
 } ImageMessage;
 
@@ -94,7 +95,6 @@ import (
 	"fmt"
 	"math"
 	"mime"
-	"os"
 	"slices"
 	"sort"
 	"time"
@@ -225,14 +225,12 @@ func C_SetStateSyncCompleteHandler(callback C.StateSyncCompleteCallback, data un
 //export C_NewClient
 func C_NewClient(dbPath *C.char) {
 	goPath := C.GoString(dbPath)
-	// dbLog := waLog.Stdout("Database", "DEBUG", true)
 	dbLog := &WrLogger{}
 	container, err := sqlstore.New("sqlite3", "file:"+goPath+"?_foreign_keys=on", dbLog)
 	if err != nil {
 		panic(err)
 	}
 	deviceStore, _ := container.GetFirstDevice()
-	// clientLog := waLog.Stdout("Client", "DEBUG", true)
 	clientLog := &WrLogger{}
 	client = whatsmeow.NewClient(deviceStore, clientLog)
 }
@@ -363,22 +361,13 @@ func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
 		}
 
 		filePath := fmt.Sprintf("imgs/%s%s", info.ID, ext)
-		imageData, err := client.Download(img)
 
-		if err != nil {
-			LOG_ERROR("Error downloading image: %v", err)
-		} else {
-			file, err := os.Create(filePath)
-			defer file.Close()
-			if err != nil {
-				LOG_ERROR("Error creating file: %v", err)
-			} else {
-				_, err := file.Write(imageData)
-				if err != nil {
-					LOG_ERROR("Error writing to file: %v", err)
-				}
-			}
-		}
+		fileId := DownloadableMessageToFileId(client, img, filePath)
+		cfileId := C.CString(fileId)
+		defer C.free(unsafe.Pointer(cfileId))
+
+		// imageData, err := client.DownloadMediaWithPath(img.GetDirectPath(), img.GetFileEncSHA256(), img.GetFileSHA256(), img.GetMediaKey(), getSize(img), mediaType, mediaTypeToMMSType[mediaType])
+		// _, _ = DownloadFromFileId(client, fileId)
 
 		cpath := C.CString(filePath)
 		defer C.free(unsafe.Pointer(cpath))
@@ -392,6 +381,7 @@ func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
 
 		content := (*C.ImageMessage)(C.malloc(C.sizeof_ImageMessage))
 		content.path = cpath
+		content.fileID = cfileId
 		content.caption = ccaption
 		defer C.free(unsafe.Pointer(content))
 
@@ -402,6 +392,12 @@ func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
 		}
 		C.callMessageHandler(messageHandler, &message)
 	}
+}
+
+//export C_DownloadFile
+func C_DownloadFile(fileId *C.char) {
+	goFileId := C.GoString(fileId)
+	DownloadFromFileId(client, goFileId)
 }
 
 //export C_AddEventHandlers
