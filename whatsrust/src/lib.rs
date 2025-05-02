@@ -81,9 +81,11 @@ struct CMessageInfo {
     quote_id: *const c_char,
 }
 
+pub type MessageId = Rc<str>;
+
 #[derive(Clone, Debug)]
 pub struct MessageInfo {
-    pub id: Rc<str>,
+    pub id: MessageId,
     pub chat: JID,
     pub sender: JID,
     pub timestamp: i64,
@@ -122,18 +124,13 @@ fn get_message_type(message_type: i8) -> MessageType {
     }
 }
 
+pub type FileId = Rc<str>;
+
 #[derive(Clone, Debug)]
 pub struct ImageContent {
     pub path: Rc<str>,
-    pub file_id: Rc<str>,
+    pub file_id: FileId,
     pub caption: Option<Rc<str>>,
-}
-
-impl ImageContent {
-    pub fn download(&self) {
-        let file_id_c = std::ffi::CString::new(self.file_id.as_ref()).unwrap();
-        unsafe { C_DownloadFile(file_id_c.as_ptr()) }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -208,12 +205,24 @@ unsafe extern "C" {
     fn C_GetAllContacts() -> CContactsMapResult;
     fn C_Disconnect();
     fn C_PairPhone(phone: *const c_char) -> *const c_char;
-    fn C_DownloadFile(file_id: *const c_char);
+    fn C_DownloadFile(file_id: *const c_char) -> u8;
 
     fn C_SetMessageHandler(message_cb: CMessageCallback, data: *mut c_void);
     fn C_SetHistorySyncHandler(history_sync_cb: CHistorySyncCallback, data: *mut c_void);
     fn C_SetLogHandler(log_fn: LogFn);
     fn C_SetStateSyncCompleteHandler(event_cb: CEventCallback, data: *mut c_void);
+}
+
+pub struct DownloadFailed;
+
+pub fn download_file(file_id: &FileId) -> Result<(), DownloadFailed> {
+    let file_id_c = std::ffi::CString::new(file_id.as_ref()).unwrap();
+    let code = unsafe { C_DownloadFile(file_id_c.as_ptr()) };
+    if code == 0 {
+        Ok(())
+    } else {
+        Err(DownloadFailed)
+    }
 }
 
 pub fn pair_phone(phone: &str) -> String {

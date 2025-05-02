@@ -395,9 +395,10 @@ func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
 }
 
 //export C_DownloadFile
-func C_DownloadFile(fileId *C.char) {
+func C_DownloadFile(fileId *C.char) C.uint8_t {
 	goFileId := C.GoString(fileId)
-	DownloadFromFileId(client, goFileId)
+	_, status := DownloadFromFileId(client, goFileId)
+	return C.uint8_t(status)
 }
 
 //export C_AddEventHandlers
