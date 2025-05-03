@@ -73,6 +73,13 @@ struct CContact {
 }
 
 #[repr(C)]
+struct CContactsMapResult {
+    jids: *const CJID,
+    contacts: *const CContact,
+    count: u32,
+}
+
+#[repr(C)]
 struct CMessageInfo {
     id: *const c_char,
     chat: CJID,
@@ -81,15 +88,16 @@ struct CMessageInfo {
     quote_id: *const c_char,
 }
 
-pub type MessageId = Rc<str>;
+#[repr(C)]
+struct CGroupInfo {
+    jid: CJID,
+    name: *const c_char,
+}
 
-#[derive(Clone, Debug)]
-pub struct MessageInfo {
-    pub id: MessageId,
-    pub chat: JID,
-    pub sender: JID,
-    pub timestamp: i64,
-    pub quote_id: Option<Rc<str>>,
+#[repr(C)]
+struct CGetGroupInfoResult {
+    groups: *const CGroupInfo,
+    count: u32,
 }
 
 #[repr(C)]
@@ -109,6 +117,17 @@ struct CMessage {
     info: CMessageInfo,
     message_type: i8,
     message: *const c_void,
+}
+
+pub type MessageId = Rc<str>;
+
+#[derive(Clone, Debug)]
+pub struct MessageInfo {
+    pub id: MessageId,
+    pub chat: JID,
+    pub sender: JID,
+    pub timestamp: i64,
+    pub quote_id: Option<Rc<str>>,
 }
 
 enum MessageType {
@@ -145,7 +164,6 @@ pub struct Message {
     pub message: MessageContent,
 }
 
-// Rust-friendly version
 #[derive(Clone, Debug)]
 pub struct Contact {
     pub found: bool,
@@ -153,6 +171,12 @@ pub struct Contact {
     pub full_name: Rc<str>,
     pub push_name: Rc<str>,
     pub business_name: Rc<str>,
+}
+
+#[derive(Clone, Debug)]
+pub struct GroupInfo {
+    pub jid: JID,
+    pub name: Rc<str>,
 }
 
 impl From<&CContact> for Contact {
@@ -184,13 +208,6 @@ impl From<&CContact> for Contact {
     }
 }
 
-#[repr(C)]
-struct CContactsMapResult {
-    jids: *const CJID,
-    contacts: *const CContact,
-    count: u32,
-}
-
 pub type LogFn = extern "C" fn(*const c_char, u8);
 
 type CQrCallback = extern "C" fn(*const c_char, *mut c_void);
@@ -203,6 +220,7 @@ unsafe extern "C" {
     fn C_SendMessage(jid: *const CJID, message: *const c_char);
     fn C_AddEventHandlers();
     fn C_GetAllContacts() -> CContactsMapResult;
+    fn C_GetJoinedGroups() -> CGetGroupInfoResult;
     fn C_Disconnect();
     fn C_PairPhone(phone: *const c_char) -> *const c_char;
     fn C_DownloadFile(file_id: *const c_char) -> u8;
@@ -432,6 +450,23 @@ pub fn send_message(jid: &JID, message: &str) {
     let message_c = std::ffi::CString::new(message).unwrap();
     let jid_c = CJID::from(jid);
     unsafe { C_SendMessage(&jid_c, message_c.as_ptr()) }
+}
+
+pub fn get_joined_groups() -> Vec<GroupInfo> {
+    let result = unsafe { C_GetJoinedGroups() };
+    let groups = unsafe { std::slice::from_raw_parts(result.groups, result.count as usize) };
+
+    groups
+        .iter()
+        .map(|group| {
+            let jid: JID = (&group.jid).into();
+            let name = unsafe { std::ffi::CStr::from_ptr(group.name) }
+                .to_string_lossy()
+                .into_owned()
+                .into();
+            GroupInfo { jid, name }
+        })
+        .collect()
 }
 
 pub fn get_all_contacts() -> HashMap<JID, Contact> {

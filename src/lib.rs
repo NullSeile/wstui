@@ -53,6 +53,16 @@ pub fn get_chats() -> ChatList {
         }
     }
 
+    for group_info in wr::get_joined_groups() {
+        chats.insert(
+            group_info.jid,
+            ChatEntry {
+                name: group_info.name,
+                last_message_time: None,
+            },
+        );
+    }
+
     chats
 }
 
@@ -222,7 +232,7 @@ impl App<'_> {
         if let Event::Key(key) = event {
             if key.kind == KeyEventKind::Press {
                 match key.code {
-                    KeyCode::Esc => {
+                    KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
                         self.should_quit = true;
                         return;
                     }

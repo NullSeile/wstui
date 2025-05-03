@@ -12,7 +12,7 @@ typedef struct {
 	uint16_t device;
 	uint16_t integrator;
 	char* server;
-} CJID;
+} JID;
 
 typedef struct {
 	bool found;
@@ -20,18 +20,28 @@ typedef struct {
 	const char* full_name;
 	const char* push_name;
 	const char* business_name;
-} CContact;
+} Contact;
 
 typedef struct {
-	CJID* jids;
-	CContact* contacts;
+	JID* jids;
+	Contact* contacts;
 	uint32_t size;
 } ContactsMapResult;
 
 typedef struct {
+	JID jid;
+	const char* name;
+} GroupInfo;
+
+typedef struct {
+	GroupInfo* groups;
+	uint32_t size;
+} GetJoinedGroupsResult;
+
+typedef struct {
 	char* id;
-	CJID chat;
-	CJID sender;
+	JID chat;
+	JID sender;
 	int64_t timestamp;
 	char* quoteID;
 } MessageInfo;
@@ -161,8 +171,8 @@ func (l *WrLogger) Sub(module string) waLog.Logger {
 }
 
 // Convert Go JID to C JID
-func jidToC(jid types.JID) C.CJID {
-	return C.CJID{
+func jidToC(jid types.JID) C.JID {
+	return C.JID{
 		user:       C.CString(jid.User),
 		raw_agent:  C.uint8_t(jid.RawAgent),
 		device:     C.uint16_t(jid.Device),
@@ -172,7 +182,7 @@ func jidToC(jid types.JID) C.CJID {
 }
 
 // Convert C JID to Go JID
-func cToJid(cjid C.CJID) types.JID {
+func cToJid(cjid C.JID) types.JID {
 	return types.JID{
 		User:       C.GoString(cjid.user),
 		RawAgent:   uint8(cjid.raw_agent),
@@ -183,8 +193,8 @@ func cToJid(cjid C.CJID) types.JID {
 }
 
 // Convert Go ContactInfo to C Contact
-func contactToC(contact types.ContactInfo) C.CContact {
-	return C.CContact{
+func contactToC(contact types.ContactInfo) C.Contact {
+	return C.Contact{
 		found:         C.bool(contact.Found),
 		first_name:    C.CString(contact.FirstName),
 		full_name:     C.CString(contact.FullName),
@@ -319,16 +329,19 @@ func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
 		C.callMessageHandler(messageHandler, &message)
 	}
 	if msg.ExtendedTextMessage != nil {
-		text := msg.GetExtendedTextMessage().GetText()
-		context_info := msg.GetExtendedTextMessage().GetContextInfo()
+		ext_msg := msg.GetExtendedTextMessage()
+
+		text := ext_msg.GetText()
+		ctext := C.CString(text)
+		defer C.free(unsafe.Pointer(ctext))
+
+		context_info := ext_msg.GetContextInfo()
 		if context_info != nil {
 			id := context_info.GetStanzaID()
 			if id != "" {
 				cinfo.quoteID = C.CString(id)
 			}
 		}
-		ctext := C.CString(text)
-		defer C.free(unsafe.Pointer(ctext))
 
 		content := (*C.TextMessage)(C.malloc(C.sizeof_TextMessage))
 		content.text = ctext
@@ -352,7 +365,7 @@ func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
 		ext := ExtensionByType(img.GetMimetype(), ".jpg")
 		caption := img.GetCaption()
 
-		context_info := msg.GetExtendedTextMessage().GetContextInfo()
+		context_info := img.GetContextInfo()
 		if context_info != nil {
 			id := context_info.GetStanzaID()
 			if id != "" {
@@ -365,9 +378,6 @@ func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
 		fileId := DownloadableMessageToFileId(client, img, filePath)
 		cfileId := C.CString(fileId)
 		defer C.free(unsafe.Pointer(cfileId))
-
-		// imageData, err := client.DownloadMediaWithPath(img.GetDirectPath(), img.GetFileEncSHA256(), img.GetFileSHA256(), img.GetMediaKey(), getSize(img), mediaType, mediaTypeToMMSType[mediaType])
-		// _, _ = DownloadFromFileId(client, fileId)
 
 		cpath := C.CString(filePath)
 		defer C.free(unsafe.Pointer(cpath))
@@ -485,7 +495,7 @@ func C_PairPhone(phone *C.char) *C.char {
 }
 
 //export C_SendMessage
-func C_SendMessage(jid *C.CJID, message *C.char) {
+func C_SendMessage(jid *C.JID, message *C.char) {
 	goJid := cToJid(*jid)
 	goMessage := C.GoString(message)
 
@@ -497,7 +507,34 @@ func C_SendMessage(jid *C.CJID, message *C.char) {
 	}
 }
 
-// TODO: Free the memory allocated for C.CJID and C.CContact
+// TODO: Free the memory allocated for C.JID and C.Contact
+
+//export C_GetJoinedGroups
+func C_GetJoinedGroups() C.GetJoinedGroupsResult {
+	groups, err := client.GetJoinedGroups()
+	if err != nil {
+		panic(err)
+	}
+
+	n := len(groups)
+	c_groups := C.malloc(C.size_t(n) * C.size_t(unsafe.Sizeof(C.GroupInfo{})))
+	groupList := unsafe.Slice((*C.GroupInfo)(c_groups), n)
+
+	i := 0
+	for _, group := range groups {
+		groupList[i] = C.GroupInfo{
+			jid:  jidToC(group.JID),
+			name: C.CString(group.GroupName.Name),
+		}
+		i++
+	}
+
+	result := C.GetJoinedGroupsResult{
+		groups: (*C.GroupInfo)(c_groups),
+		size:   C.uint32_t(n),
+	}
+	return result
+}
 
 //export C_GetAllContacts
 func C_GetAllContacts() C.ContactsMapResult {
@@ -507,11 +544,11 @@ func C_GetAllContacts() C.ContactsMapResult {
 	}
 
 	n := len(contacts)
-	c_jids := C.malloc(C.size_t(n) * C.size_t(unsafe.Sizeof(C.CJID{})))
-	c_contacts := C.malloc(C.size_t(n) * C.size_t(unsafe.Sizeof(C.CContact{})))
+	c_jids := C.malloc(C.size_t(n) * C.size_t(unsafe.Sizeof(C.JID{})))
+	c_contacts := C.malloc(C.size_t(n) * C.size_t(unsafe.Sizeof(C.Contact{})))
 
-	jidsList := unsafe.Slice((*C.CJID)(c_jids), n)
-	contactList := unsafe.Slice((*C.CContact)(c_contacts), n)
+	jidsList := unsafe.Slice((*C.JID)(c_jids), n)
+	contactList := unsafe.Slice((*C.Contact)(c_contacts), n)
 
 	i := 0
 	for jid, contact := range contacts {
@@ -521,8 +558,8 @@ func C_GetAllContacts() C.ContactsMapResult {
 	}
 
 	result := C.ContactsMapResult{
-		jids:     (*C.CJID)(c_jids),
-		contacts: (*C.CContact)(c_contacts),
+		jids:     (*C.JID)(c_jids),
+		contacts: (*C.Contact)(c_contacts),
 		size:     C.uint32_t(n),
 	}
 	return result
