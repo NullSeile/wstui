@@ -12,6 +12,7 @@ use ratatui::style::Style;
 use ratatui::widgets::Block;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::Protocol;
+use rusqlite::Connection;
 use tui_textarea::TextArea;
 use whatsrust as wr;
 
@@ -104,9 +105,18 @@ pub enum AppEvent {
     DownloadFile(wr::MessageId, wr::FileId),
 }
 
+pub struct ChatInfo {
+    pub jid: wr::JID,
+    pub name: Option<Rc<str>>,
+    pub last_message_time: Option<i64>,
+}
+
 pub struct App<'a> {
+    pub connection: Connection,
+
     pub messages: MessagesStorage,
     pub chats: ChatList,
+    // pub chat_info: HashMap<wr::JID, wr::Contact>,
     pub sorted_chats: Vec<(wr::JID, ChatEntry)>,
     pub selected_chat_jid: Option<wr::JID>,
     pub selected_chat_index: Option<usize>,
@@ -136,7 +146,10 @@ impl Default for App<'_> {
                 .borders(ratatui::widgets::Borders::ALL),
         );
 
+        let connection = Connection::open("whatsapp.db").unwrap();
+
         Self {
+            connection,
             messages: MessagesStorage::new(),
             chats: ChatList::new(),
             sorted_chats: Vec::new(),
@@ -156,6 +169,43 @@ impl Default for App<'_> {
 }
 
 impl App<'_> {
+    pub fn init(&mut self) {
+        self.connection
+            .execute(
+                "CREATE TABLE IF NOT EXISTS text_messages (
+                    id TEXT PRIMARY KEY,
+                    chat_id TEXT,
+                    message TEXT,
+                    timestamp INTEGER
+                )",
+                [],
+            )
+            .unwrap();
+
+        // let query = self
+        //     .connection
+        //     .prepare("SELECT id, chat_id, message, timestamp FROM text_messages")
+        //     .unwrap();
+
+        // query
+        //     .query_map([], |row| {
+        //         let id: String = row.get(0)?;
+        //         let chat_id: String = row.get(1)?;
+        //         let message: String = row.get(2)?;
+        //         let timestamp: i64 = row.get(3)?;
+        //
+        //         Ok(wr::Message {
+        //             info: wr::MessageInfo {
+        //                 id,
+        //                 chat_id,
+        //                 timestamp,
+        //             },
+        //             message: wr::MessageContent::Text(message),
+        //         })
+        //     })
+        //     .unwrap();
+    }
+
     pub fn tick(&mut self) {
         {
             let mut event_queue = self.event_queue.lock().unwrap();
@@ -195,13 +245,13 @@ impl App<'_> {
                         entry.last_message_time = Some(msg.info.timestamp);
                     }
                 } else {
-                    // chats.insert(
-                    //     chat.clone(),
-                    //     ChatEntry {
-                    //         name: chat.user.clone(),
-                    //         last_message_time: Some(msg.info.timestamp),
-                    //     },
-                    // );
+                    self.chats.insert(
+                        chat.clone(),
+                        ChatEntry {
+                            name: chat.clone().into(),
+                            last_message_time: Some(msg.info.timestamp),
+                        },
+                    );
                 }
                 self.sorted_chats = get_sorted_chats(&self.chats);
                 if let Some(ref current_jid) = self.selected_chat_jid {

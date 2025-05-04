@@ -6,13 +6,7 @@ package main
 #include <stdbool.h>
 #include <stdio.h>
 
-typedef struct {
-	char* user;
-	uint8_t raw_agent;
-	uint16_t device;
-	uint16_t integrator;
-	char* server;
-} JID;
+typedef const char* JID;
 
 typedef struct {
 	bool found;
@@ -172,24 +166,16 @@ func (l *WrLogger) Sub(module string) waLog.Logger {
 
 // Convert Go JID to C JID
 func jidToC(jid types.JID) C.JID {
-	return C.JID{
-		user:       C.CString(jid.User),
-		raw_agent:  C.uint8_t(jid.RawAgent),
-		device:     C.uint16_t(jid.Device),
-		integrator: C.uint16_t(jid.Integrator),
-		server:     C.CString(jid.Server),
-	}
+	return C.CString(jid.String())
 }
 
 // Convert C JID to Go JID
 func cToJid(cjid C.JID) types.JID {
-	return types.JID{
-		User:       C.GoString(cjid.user),
-		RawAgent:   uint8(cjid.raw_agent),
-		Device:     uint16(cjid.device),
-		Integrator: uint16(cjid.integrator),
-		Server:     C.GoString(cjid.server),
+	jid, err := types.ParseJID(C.GoString(cjid))
+	if err != nil {
+		panic(err)
 	}
+	return jid
 }
 
 // Convert Go ContactInfo to C Contact
@@ -544,8 +530,8 @@ func C_GetAllContacts() C.ContactsMapResult {
 	}
 
 	n := len(contacts)
-	c_jids := C.malloc(C.size_t(n) * C.size_t(unsafe.Sizeof(C.JID{})))
-	c_contacts := C.malloc(C.size_t(n) * C.size_t(unsafe.Sizeof(C.Contact{})))
+	c_jids := C.malloc(C.size_t(n) * C.size_t(C.sizeof_JID))
+	c_contacts := C.malloc(C.size_t(n) * C.size_t(C.sizeof_Contact))
 
 	jidsList := unsafe.Slice((*C.JID)(c_jids), n)
 	contactList := unsafe.Slice((*C.Contact)(c_contacts), n)

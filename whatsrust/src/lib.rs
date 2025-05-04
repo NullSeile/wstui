@@ -9,57 +9,27 @@ use std::{
 mod callbacks;
 use callbacks::CallbackTranslator;
 
-#[repr(C)]
-struct CJID {
-    user: *mut c_char,
-    raw_agent: u8,
-    device: u16,
-    integrator: u16,
-    server: *mut c_char,
-}
+type CJID = *const c_char;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct JID {
-    pub user: Rc<str>,
-    pub raw_agent: u8,
-    pub device: u16,
-    pub integrator: u16,
-    pub server: Rc<str>,
+pub struct JID(Rc<str>);
+
+impl From<JID> for Rc<str> {
+    fn from(jid: JID) -> Self {
+        jid.0
+    }
 }
 
 impl From<&CJID> for JID {
     fn from(cjid: &CJID) -> Self {
-        let user = unsafe { std::ffi::CStr::from_ptr(cjid.user) }
+        JID(unsafe { std::ffi::CStr::from_ptr(*cjid) }
             .to_string_lossy()
-            .into_owned()
-            .into();
-        let server = unsafe { std::ffi::CStr::from_ptr(cjid.server) }
-            .to_string_lossy()
-            .into_owned()
-            .into();
-
-        JID {
-            user,
-            raw_agent: cjid.raw_agent,
-            device: cjid.device,
-            integrator: cjid.integrator,
-            server,
-        }
+            .into())
     }
 }
-
 impl From<&JID> for CJID {
     fn from(jid: &JID) -> Self {
-        let user = std::ffi::CString::new(jid.user.as_ref()).unwrap();
-        let server = std::ffi::CString::new(jid.server.as_ref()).unwrap();
-
-        CJID {
-            user: user.into_raw(),
-            raw_agent: jid.raw_agent,
-            device: jid.device,
-            integrator: jid.integrator,
-            server: server.into_raw(),
-        }
+        std::ffi::CString::new(jid.0.as_ref()).unwrap().into_raw()
     }
 }
 
@@ -217,7 +187,7 @@ type CHistorySyncCallback = extern "C" fn(u32, *mut c_void);
 unsafe extern "C" {
     fn C_NewClient(db_path: *const c_char);
     fn C_Connect(qr_cb: CQrCallback, data: *mut c_void) -> bool;
-    fn C_SendMessage(jid: *const CJID, message: *const c_char);
+    fn C_SendMessage(jid: CJID, message: *const c_char);
     fn C_AddEventHandlers();
     fn C_GetAllContacts() -> CContactsMapResult;
     fn C_GetJoinedGroups() -> CGetGroupInfoResult;
@@ -374,7 +344,7 @@ pub fn disconnect() {
 pub fn send_message(jid: &JID, message: &str) {
     let message_c = std::ffi::CString::new(message).unwrap();
     let jid_c = CJID::from(jid);
-    unsafe { C_SendMessage(&jid_c, message_c.as_ptr()) }
+    unsafe { C_SendMessage(jid_c, message_c.as_ptr()) }
 }
 
 pub fn get_joined_groups() -> Vec<GroupInfo> {

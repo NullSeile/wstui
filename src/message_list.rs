@@ -60,7 +60,7 @@ fn render_message(frame: &mut Frame, message: &wr::Message, app: &mut App, area:
     let sender_name = if let Some(user) = app.chats.get(&message.info.sender) {
         user.name.clone()
     } else {
-        message.info.sender.user.clone()
+        message.info.sender.clone().into()
     };
     let sender_widget = Line::from_iter([
         sender_name.to_string().into(),

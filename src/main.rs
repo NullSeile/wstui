@@ -10,7 +10,7 @@ use std::{
 };
 use whatsrust as wr;
 
-#[derive(Parser, Debug)]
+#[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
     #[clap(short, long)]
