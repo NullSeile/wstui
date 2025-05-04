@@ -265,12 +265,8 @@ pub fn new_client(db_path: &str) {
     unsafe { C_NewClient(db_path_c.as_ptr()) }
 }
 
-struct SetMessageHandler;
-impl CallbackTranslator for SetMessageHandler {
-    type CType = *const CMessage;
-    type RustType = Message;
-
-    unsafe fn to_rust(ptr: Self::CType) -> Self::RustType {
+impl CallbackTranslator<*const CMessage> for Message {
+    unsafe fn to_rust(ptr: *const CMessage) -> Self {
         let msg = unsafe { &(*ptr) };
         let id = unsafe { std::ffi::CStr::from_ptr(msg.info.id) }
             .to_string_lossy()
@@ -343,104 +339,33 @@ impl CallbackTranslator for SetMessageHandler {
             message,
         }
     }
-
-    unsafe fn invoke_closure(
-        closure: &mut Box<dyn FnMut(Self::RustType)>,
-        rust_value: Self::RustType,
-    ) {
-        closure(rust_value);
-    }
 }
-define_callback!(
-    set_message_handler_impl,
+
+setup_handler!(
+    set_message_handler,
     C_SetMessageHandler,
-    SetMessageHandler
+    *const CMessage => Message
 );
-pub fn set_message_handler<F>(handler: F)
-where
-    F: FnMut(Message) + 'static,
-{
-    set_message_handler_impl(handler)
-}
 
-struct HistorySyncHandler;
-impl CallbackTranslator for HistorySyncHandler {
-    type CType = u32;
-    type RustType = u32;
-
-    unsafe fn to_rust(ptr: Self::CType) -> Self::RustType {
+impl CallbackTranslator<u32> for u32 {
+    unsafe fn to_rust(ptr: u32) -> u32 {
         ptr
     }
-
-    unsafe fn invoke_closure(
-        closure: &mut Box<dyn FnMut(Self::RustType)>,
-        rust_value: Self::RustType,
-    ) {
-        closure(rust_value);
-    }
 }
-define_callback!(
-    history_sync_handler_impl,
-    C_SetHistorySyncHandler,
-    HistorySyncHandler
-);
-pub fn set_history_sync_handler<F>(handler: F)
-where
-    F: FnMut(u32) + 'static,
-{
-    history_sync_handler_impl(handler)
-}
+setup_handler!(set_history_sync_handler, C_SetHistorySyncHandler, u32 => u32);
 
-struct StateSyncCompleteHandler;
-impl CallbackTranslator for StateSyncCompleteHandler {
-    type CType = ();
-    type RustType = ();
-
-    unsafe fn to_rust(_ptr: Self::CType) -> Self::RustType {}
-
-    unsafe fn invoke_closure(
-        closure: &mut Box<dyn FnMut(Self::RustType)>,
-        _rust_value: Self::RustType,
-    ) {
-        closure(())
-    }
-}
-define_callback!(
-    state_sync_complete_handler_impl,
+setup_handler!(
+    set_state_sync_complete_handler,
     C_SetStateSyncCompleteHandler,
-    StateSyncCompleteHandler where CType is ()
 );
-pub fn set_state_sync_complete_handler<F>(mut handler: F)
-where
-    F: FnMut() + 'static,
-{
-    state_sync_complete_handler_impl(move |_| handler())
-}
 
-struct QrCallback;
-impl CallbackTranslator for QrCallback {
-    type CType = *const c_char;
-    type RustType = String;
-
-    unsafe fn to_rust(ptr: Self::CType) -> Self::RustType {
+impl CallbackTranslator<*const c_char> for String {
+    unsafe fn to_rust(ptr: *const c_char) -> String {
         let c_str = unsafe { std::ffi::CStr::from_ptr(ptr) };
         c_str.to_string_lossy().into_owned()
     }
-
-    unsafe fn invoke_closure(
-        closure: &mut Box<dyn FnMut(Self::RustType)>,
-        rust_value: Self::RustType,
-    ) {
-        closure(rust_value);
-    }
 }
-define_callback!(connect_impl, C_Connect, QrCallback);
-pub fn connect<F>(handler: F)
-where
-    F: FnMut(String) + 'static,
-{
-    connect_impl(handler)
-}
+setup_handler!(connect, C_Connect, *const c_char => String);
 
 pub fn disconnect() {
     unsafe { C_Disconnect() }

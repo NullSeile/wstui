@@ -1,73 +1,44 @@
-pub trait CallbackTranslator {
-    type CType;
-    type RustType;
-
-    unsafe fn to_rust(c_value: Self::CType) -> Self::RustType;
-
-    unsafe fn invoke_closure(
-        closure: &mut Box<dyn FnMut(Self::RustType)>,
-        rust_value: Self::RustType,
-    );
+pub trait CallbackTranslator<T> {
+    unsafe fn to_rust(c_value: T) -> Self;
 }
 
-macro_rules! define_callback {
-    ($callback_name:ident, $c_func:ident, $translator:ty where CType is ()) => {
-        fn $callback_name<F>(callback: F)
-        where
-            F: FnMut(<$translator as CallbackTranslator>::RustType) + 'static,
-        {
-            let callback: Box<dyn FnMut(_)> = Box::new(callback);
-            let callback_box = Box::new(Arc::new(Mutex::new(callback)));
-            let user_data = Box::into_raw(callback_box) as *mut c_void;
+// impl<T, U: From<T>> CallbackTranslator<T> for U {
+//     unsafe fn to_rust(c_value: T) -> Self {
+//         Self::from(c_value)
+//     }
+// }
 
-            // Shim without c_param
-            extern "C" fn shim(user_data: *mut c_void) {
-                unsafe {
-                    let callback_box =
-                        Box::from_raw(user_data as *mut Arc<Mutex<Box<dyn FnMut(_)>>>);
-                    let closure = Arc::clone(&callback_box);
-                    let mut guard = closure.lock().unwrap();
-
-                    // Create unit value explicitly
-                    let rust_value = <$translator as CallbackTranslator>::to_rust(());
-
-                    <$translator as CallbackTranslator>::invoke_closure(&mut guard, rust_value);
-                    let _ = Box::into_raw(callback_box);
-                }
-            }
-
-            unsafe {
-                $c_func(shim, user_data);
-            }
-        }
+macro_rules! setup_handler {
+    ($fn_name:ident, $c_func:ident) => {
+        callback_v2!($fn_name, $c_func,);
     };
-    ($callback_name:ident, $c_func:ident, $translator:ty) => {
-        fn $callback_name<F>(callback: F)
-        // fn $callback_name<F>(mut callback: F)
+    ($fn_name:ident, $c_func:ident, $($c_type:ty => $rs_type:ty),*) => {
+        pub fn $fn_name<F>(callback: F)
         where
-            F: FnMut(<$translator as CallbackTranslator>::RustType) + 'static,
+            F: FnMut($($rs_type),*) + 'static,
         {
             // Double-box the closure to erase its type
-            let callback: Box<dyn FnMut(_)> = Box::new(callback);
+            type CallbackType = dyn FnMut($($rs_type),*);
+            let callback: Box<CallbackType> = Box::new(callback);
             let callback_box = Box::new(Arc::new(Mutex::new(callback)));
             let user_data = Box::into_raw(callback_box) as *mut c_void;
 
             // Shim callback compatible with C
             extern "C" fn shim(
-                c_param: <$translator as CallbackTranslator>::CType,
-                user_data: *mut c_void,
+                $(
+                    __param: $c_type,
+                )*
+                user_data: *mut c_void
             ) {
                 unsafe {
                     let callback_box =
-                        Box::from_raw(user_data as *mut Arc<Mutex<Box<dyn FnMut(_)>>>);
+                        Box::from_raw(user_data as *mut Arc<Mutex<Box<CallbackType>>>);
                     let closure = Arc::clone(&callback_box);
                     let mut guard = closure.lock().unwrap();
 
-                    // Convert C type to Rust type
-                    let rust_value = <$translator as CallbackTranslator>::to_rust(c_param);
-
-                    // Invoke the user's closure
-                    <$translator as CallbackTranslator>::invoke_closure(&mut guard, rust_value);
+                    guard($(
+                        <$rs_type>::to_rust(__param),
+                    ),*);
 
                     // TODO: Make sure this works
                     let _ = Box::into_raw(callback_box);
@@ -75,7 +46,6 @@ macro_rules! define_callback {
             }
 
             unsafe {
-                // Call the C function (e.g., forEachContact)
                 $c_func(shim, user_data);
             }
         }

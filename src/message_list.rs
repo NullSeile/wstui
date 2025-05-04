@@ -1,7 +1,6 @@
 use std::rc::Rc;
 
 use chrono::{DateTime, Local};
-use log::info;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
