@@ -1,7 +1,6 @@
 use std::{
     collections::HashMap,
     ffi::{c_char, c_void},
-    rc::Rc,
     sync::{Arc, Mutex},
 };
 
@@ -12,11 +11,16 @@ use callbacks::CallbackTranslator;
 type CJID = *const c_char;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct JID(Rc<str>);
+pub struct JID(pub Arc<str>);
 
-impl From<JID> for Rc<str> {
+impl From<JID> for Arc<str> {
     fn from(jid: JID) -> Self {
         jid.0
+    }
+}
+impl From<String> for JID {
+    fn from(jid: String) -> Self {
+        JID(jid.into())
     }
 }
 
@@ -89,7 +93,7 @@ struct CMessage {
     message: *const c_void,
 }
 
-pub type MessageId = Rc<str>;
+pub type MessageId = Arc<str>;
 
 #[derive(Clone, Debug)]
 pub struct MessageInfo {
@@ -97,7 +101,7 @@ pub struct MessageInfo {
     pub chat: JID,
     pub sender: JID,
     pub timestamp: i64,
-    pub quote_id: Option<Rc<str>>,
+    pub quote_id: Option<Arc<str>>,
 }
 
 enum MessageType {
@@ -113,18 +117,18 @@ fn get_message_type(message_type: i8) -> MessageType {
     }
 }
 
-pub type FileId = Rc<str>;
+pub type FileId = Arc<str>;
 
 #[derive(Clone, Debug)]
 pub struct ImageContent {
-    pub path: Rc<str>,
+    pub path: Arc<str>,
     pub file_id: FileId,
-    pub caption: Option<Rc<str>>,
+    pub caption: Option<Arc<str>>,
 }
 
 #[derive(Clone, Debug)]
 pub enum MessageContent {
-    Text(Rc<str>),
+    Text(Arc<str>),
     Image(ImageContent),
 }
 
@@ -137,16 +141,16 @@ pub struct Message {
 #[derive(Clone, Debug)]
 pub struct Contact {
     pub found: bool,
-    pub first_name: Rc<str>,
-    pub full_name: Rc<str>,
-    pub push_name: Rc<str>,
-    pub business_name: Rc<str>,
+    pub first_name: Arc<str>,
+    pub full_name: Arc<str>,
+    pub push_name: Arc<str>,
+    pub business_name: Arc<str>,
 }
 
 #[derive(Clone, Debug)]
 pub struct GroupInfo {
     pub jid: JID,
-    pub name: Rc<str>,
+    pub name: Arc<str>,
 }
 
 impl From<&CContact> for Contact {

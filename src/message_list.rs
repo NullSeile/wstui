@@ -1,6 +1,7 @@
-use std::rc::Rc;
+use std::sync::Arc;
 
 use chrono::{DateTime, Local};
+use log::info;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -8,11 +9,11 @@ use ratatui::{
     text::Line,
     widgets::{Block, Paragraph},
 };
-use ratatui_image::{Image, Resize};
+use ratatui_image::StatefulImage;
 use textwrap;
 use whatsrust as wr;
 
-use crate::{App, AppEvent, FileState, Metadata};
+use crate::{App, AppEvent, FileMeta, Metadata};
 
 fn message_height(message: &wr::Message, width: usize, app: &mut App) -> usize {
     let header_height = if message.info.quote_id.is_some() {
@@ -33,11 +34,11 @@ fn message_height(message: &wr::Message, width: usize, app: &mut App) -> usize {
                 0
             };
 
-            let content_height = match app.metadata.get(&message.info.id).unwrap() {
-                Metadata::File(meta) => match meta.state {
-                    FileState::None => 1,
-                    FileState::Failed => 1,
-                    FileState::Downloaded => 6,
+            let content_height = match app.metadata.get(&message.info.id) {
+                None => 1,
+                Some(Metadata::File(meta)) => match meta {
+                    FileMeta::Failed => 1,
+                    FileMeta::Downloaded => 12,
                 },
             };
 
@@ -48,7 +49,13 @@ fn message_height(message: &wr::Message, width: usize, app: &mut App) -> usize {
     header_height + content_height + 1
 }
 
-fn render_message(frame: &mut Frame, message: &wr::Message, app: &mut App, area: Rect) {
+fn render_message(
+    frame: &mut Frame,
+    message: &wr::Message,
+    is_selected: bool,
+    app: &mut App,
+    area: Rect,
+) {
     let timestamp = if let Some(datetime) = DateTime::from_timestamp(message.info.timestamp, 0) {
         let local_time: DateTime<Local> = datetime.into();
         local_time.to_rfc2822()
@@ -57,8 +64,8 @@ fn render_message(frame: &mut Frame, message: &wr::Message, app: &mut App, area:
     }
     .italic();
 
-    let sender_name = if let Some(user) = app.chats.get(&message.info.sender) {
-        user.name.clone()
+    let sender_name = if let Some(sender_chat) = app.chats.get(&message.info.sender) {
+        sender_chat.get_name()
     } else {
         message.info.sender.clone().into()
     };
@@ -76,7 +83,13 @@ fn render_message(frame: &mut Frame, message: &wr::Message, app: &mut App, area:
     });
     let quote_widget = message.info.quote_id.as_ref().map(|_quote_id| {
         let quoted_text = quoted_text.unwrap_or_else(|| "not found".into());
-        Line::from(format!("> {quoted_text}")).gray()
+
+        let line = Line::from(format!("> {quoted_text}"));
+        if is_selected {
+            line.dark_gray()
+        } else {
+            line.gray()
+        }
     });
 
     let [_padding, sender_area, quoted_area, content_area] = Layout::vertical([
@@ -101,11 +114,11 @@ fn render_message(frame: &mut Frame, message: &wr::Message, app: &mut App, area:
             frame.render_widget(Paragraph::new(lines), content_area);
         }
         wr::MessageContent::Image(data) => {
-            let content_height = match app.metadata.get(&message.info.id).unwrap() {
-                Metadata::File(meta) => match meta.state {
-                    FileState::None => 1,
-                    FileState::Failed => 1,
-                    FileState::Downloaded => 6,
+            let content_height = match app.metadata.get(&message.info.id) {
+                None => 1,
+                Some(Metadata::File(meta)) => match meta {
+                    FileMeta::Failed => 1,
+                    FileMeta::Downloaded => 12,
                 },
             };
 
@@ -113,44 +126,35 @@ fn render_message(frame: &mut Frame, message: &wr::Message, app: &mut App, area:
                 Layout::vertical([Constraint::Length(content_height), Constraint::Min(0)])
                     .areas(content_area);
 
-            match app.metadata.get(&message.info.id).unwrap() {
-                Metadata::File(meta) => match meta.state {
-                    FileState::None => {
-                        frame.render_widget(
-                            Paragraph::new(format!("🔗 {} +", data.path)),
-                            content_area,
-                        );
-                        app.event_queue.lock().unwrap().push(AppEvent::DownloadFile(
-                            message.info.id.clone(),
-                            data.file_id.clone(),
-                        ));
-                    }
-                    FileState::Failed => {
+            match app.metadata.get(&message.info.id) {
+                None => {
+                    frame
+                        .render_widget(Paragraph::new(format!("🔗 {} +", data.path)), content_area);
+                    app.event_queue.lock().unwrap().push(AppEvent::DownloadFile(
+                        message.info.id.clone(),
+                        data.file_id.clone(),
+                    ));
+                }
+                Some(Metadata::File(meta)) => match meta {
+                    FileMeta::Failed => {
                         frame.render_widget(
                             Paragraph::new("🔗 Failed to download image"),
                             content_area,
                         );
                     }
-                    FileState::Downloaded => {
-                        let image_static =
-                            app.image_cache.entry(data.path.clone()).or_insert_with(|| {
-                                let binding = data.path.to_string();
-                                let image_path = std::path::Path::new(&binding);
+                    FileMeta::Downloaded => {
+                        let image = app.image_cache.entry(data.path.clone()).or_insert_with(|| {
+                            let binding = data.path.to_string();
+                            let image_path = std::path::Path::new(&binding);
 
-                                let image_src = image::ImageReader::open(image_path)
-                                    .unwrap()
-                                    .decode()
-                                    .unwrap();
+                            let image_src = image::ImageReader::open(image_path)
+                                .unwrap()
+                                .decode()
+                                .unwrap();
 
-                                app.picker
-                                    .new_protocol(
-                                        image_src,
-                                        Rect::new(0, 0, content_area.width, 6),
-                                        Resize::Scale(None),
-                                    )
-                                    .unwrap()
-                            });
-                        frame.render_widget(Image::new(image_static), img_area);
+                            app.picker.new_resize_protocol(image_src)
+                        });
+                        frame.render_stateful_widget(StatefulImage::default(), img_area, image);
                     }
                 },
             };
@@ -169,11 +173,8 @@ fn render_message(frame: &mut Frame, message: &wr::Message, app: &mut App, area:
 pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<()> {
     let chat_jid = app.selected_chat_jid.as_ref()?;
 
-    let contact = app
-        .chats
-        .get(chat_jid)
-        .unwrap_or_else(|| panic!("Contact not found for chat: {chat_jid:?}"));
-    let block = Block::bordered().title(format!("Chat with {}", contact.name));
+    let contact = app.chats.get(chat_jid).unwrap();
+    let block = Block::bordered().title(format!("Chat with {}", contact.get_name()));
     frame.render_widget(&block, area);
 
     let list_area = block.inner(area);
@@ -248,9 +249,11 @@ pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<(
         };
 
         let is_selected = app.message_list_state.selected == Some(i);
+        if is_selected {
+            app.selected_message = Some(item.info.id.clone())
+        };
 
         let item_area = row_area;
-        render_message(frame, item, app, item_area);
 
         if is_selected {
             let style = Style::default()
@@ -261,6 +264,8 @@ pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<(
             message_area.height -= 1;
             frame.buffer_mut().set_style(message_area, style);
         }
+
+        render_message(frame, item, is_selected, app, item_area);
     }
     None
 }
@@ -447,7 +452,7 @@ impl MessageListState {
     }
 }
 
-fn get_quoted_text(msg: &wr::Message) -> Rc<str> {
+fn get_quoted_text(msg: &wr::Message) -> Arc<str> {
     match &msg.message {
         wr::MessageContent::Text(text) => text.clone(),
         wr::MessageContent::Image(wr::ImageContent {

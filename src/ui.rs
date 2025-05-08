@@ -4,9 +4,21 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     widgets::{Block, Borders, List, ListState},
 };
+use ratatui_image::{Resize, StatefulImage};
 use tui_logger::TuiLoggerWidget;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    if let Some(img_id) = &app.active_image {
+        if let Some(image) = app.image_cache.get_mut(img_id) {
+            frame.render_stateful_widget(
+                StatefulImage::default().resize(Resize::Scale(None)),
+                frame.area(),
+                image,
+            );
+            return;
+        }
+    }
+
     let [contacts_area, chat_area, logs_area] = Layout::horizontal([
         Constraint::Min(30),
         Constraint::Percentage(50),
@@ -29,7 +41,7 @@ fn render_contacts(frame: &mut Frame, app: &mut App, area: Rect) {
     let items = app
         .sorted_chats
         .iter()
-        .map(|entry| entry.1.name.to_string())
+        .map(|entry| entry.get_name().to_string())
         .collect::<Vec<_>>();
 
     let mut list_state = ListState::default().with_selected(app.selected_chat_index);

@@ -32,12 +32,14 @@ extern "C" fn log_handler(msg: *const c_char, level: u8) {
 }
 
 fn main() {
+    let _ = tui_logger::init_logger(tui_logger::LevelFilter::Debug);
+    tui_logger::set_default_level(tui_logger::LevelFilter::Debug);
+
     let mut app = App::default();
+    app.init();
 
     let args = Args::parse();
     let ws_database_path = "examplestore.db";
-    let _ = tui_logger::init_logger(tui_logger::LevelFilter::Debug);
-    tui_logger::set_default_level(tui_logger::LevelFilter::Debug);
 
     wr::set_log_handler(log_handler);
 
@@ -57,7 +59,7 @@ fn main() {
     let message_queue_clone = Arc::clone(&app.message_queue);
     wr::set_message_handler(move |message| {
         let mut message_queue = message_queue_clone.lock().unwrap();
-        info!("Eventttt: {message:?}");
+        // info!("Eventttt: {message:?}");
         message_queue.push(message);
     });
 
@@ -71,8 +73,8 @@ fn main() {
             println!("Pairing code: {}", code);
         }
     });
-    app.chats = get_chats();
-    app.sorted_chats = get_sorted_chats(&app.chats);
+    // app.chats = get_chats();
+    // app.sorted_chats = get_sorted_chats(&app.chats);
 
     wr::add_event_handlers();
 
