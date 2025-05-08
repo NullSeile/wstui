@@ -481,15 +481,27 @@ func C_PairPhone(phone *C.char) *C.char {
 }
 
 //export C_SendMessage
-func C_SendMessage(jid *C.JID, message *C.char) {
-	goJid := cToJid(*jid)
-	goMessage := C.GoString(message)
+func C_SendMessage(cjid C.JID, ctext *C.char) {
+	jid := cToJid(cjid)
+	text := C.GoString(ctext)
 
-	_, err := client.SendMessage(context.Background(), goJid, &waE2E.Message{
-		Conversation: &goMessage,
-	})
+	message := waE2E.Message{
+		Conversation: &text,
+	}
+
+	sendResponse, err := client.SendMessage(context.Background(), jid, &message)
 	if err != nil {
 		panic(err)
+	} else {
+		var messageInfo types.MessageInfo
+		messageInfo.Chat = jid
+		messageInfo.IsFromMe = true
+		messageInfo.Sender = *client.Store.ID
+
+		messageInfo.ID = sendResponse.ID
+		messageInfo.Timestamp = sendResponse.Timestamp
+
+		HandleMessage(messageInfo, &message)
 	}
 }
 
