@@ -38,6 +38,7 @@ typedef struct {
 	JID sender;
 	int64_t timestamp;
 	char* quoteID;
+	bool isRead;
 } MessageInfo;
 
 typedef struct {
@@ -166,7 +167,7 @@ func (l *WrLogger) Sub(module string) waLog.Logger {
 
 // Convert Go JID to C JID
 func jidToC(jid types.JID) C.JID {
-	return C.CString(jid.String())
+	return C.CString(jid.User + "@" + jid.Server)
 }
 
 // Convert C JID to Go JID
@@ -285,6 +286,45 @@ const (
 	MessageTypeImage
 )
 
+// C.Message to waE2E.Message
+func CMessageToWaE2EMessage(cmsg *C.Message) (types.MessageInfo, *waE2E.Message) {
+	info := types.MessageInfo{
+		MessageSource: types.MessageSource{
+			Chat:   cToJid(cmsg.info.chat),
+			Sender: cToJid(cmsg.info.sender),
+		},
+		ID:        C.GoString(cmsg.info.id),
+		Timestamp: time.Unix(int64(cmsg.info.timestamp), 0),
+	}
+
+	switch cmsg.messageType {
+	case C.int8_t(MessageTypeText):
+		textMsg := (*C.TextMessage)(cmsg.message)
+		text := C.GoString(textMsg.text)
+		LOG_INFO("Text: %v %s", textMsg.text, text)
+		msg := waE2E.Message{
+			Conversation: &text,
+		}
+		return info, &msg
+	case C.int8_t(MessageTypeImage):
+		imgMsg := (*C.ImageMessage)(cmsg.message)
+		// downloadInfo, err := FileIdToDownloadInfo(C.GoString(imgMsg.fileID))
+		// if err != nil {
+		// 	panic(err)
+		// }
+
+		caption := C.GoString(imgMsg.caption)
+		msg := waE2E.Message{
+			ImageMessage: &waE2E.ImageMessage{
+				Caption: &caption,
+			},
+		}
+		return info, &msg
+	default:
+		return info, nil
+	}
+}
+
 func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
 	chat := info.Chat
 	sender := info.Sender
@@ -296,6 +336,8 @@ func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
 		sender:    jidToC(sender),
 		timestamp: C.int64_t(timestamp),
 		quoteID:   nil,
+		isRead:    C.bool(false),
+		// isRead:    C.bool(info.IsFromMe),
 	}
 
 	if msg.Conversation != nil {
@@ -324,6 +366,7 @@ func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
 		context_info := ext_msg.GetContextInfo()
 		if context_info != nil {
 			id := context_info.GetStanzaID()
+			// LOG_ERROR("asdfasdf %s", co)
 			if id != "" {
 				cinfo.quoteID = C.CString(id)
 			}
@@ -413,6 +456,17 @@ func C_AddEventHandlers() {
 		case *events.Message:
 			HandleMessage(evt.Info, evt.Message)
 
+		case *events.Receipt:
+			if evt.Type == types.ReceiptTypeRead || evt.Type == types.ReceiptTypeReadSelf {
+				LOG_INFO(fmt.Sprintf("%#v was read by %s at %s", evt.MessageIDs, evt.SourceString(), evt.Timestamp))
+				// chatId := evt.MessageSource.Chat.ToNonAD().String()
+				// isRead := true
+				// for _, msgId := range evt.MessageIDs {
+				// LOG_TRACE(fmt.Sprintf("Call CWmNewMessageStatusNotify"))
+				// CWmNewMessageStatusNotify(connId, chatId, msgId, BoolToInt(isRead))
+				// }
+			}
+
 		case *events.HistorySync:
 			selfJid := *client.Store.ID
 
@@ -480,15 +534,36 @@ func C_PairPhone(phone *C.char) *C.char {
 	return cCode
 }
 
+// func C_SendMessage(cjid C.JID, ctext *C.char, cquoteId *C.char, cquotedSender C.JID) {
+//
 //export C_SendMessage
-func C_SendMessage(cjid C.JID, ctext *C.char) {
+func C_SendMessage(cjid C.JID, ctext *C.char, quoted_msg *C.Message) {
 	jid := cToJid(cjid)
 	text := C.GoString(ctext)
 
-	message := waE2E.Message{
-		Conversation: &text,
+	// LOG_INFO("%v", cquoteId)
+
+	contextInfo := &waE2E.ContextInfo{}
+	if quoted_msg != nil {
+		info, msg := CMessageToWaE2EMessage(quoted_msg)
+		contextInfo.StanzaID = &info.ID
+		contextInfo.QuotedMessage = msg
+		quotedSender := info.Sender.String()
+		contextInfo.Participant = &quotedSender
+
+		LOG_INFO("ID %#v", info.ID)
+		LOG_INFO("Sender %#v", info.Sender.String())
+
+		// LOG_INFO("Info %#v", info)
+		// LOG_INFO("msg %#v", msg)
+		// LOG_INFO("QuotedMessage %#v", contextInfo)
 	}
 
+	var message waE2E.Message
+	message.ExtendedTextMessage = &waE2E.ExtendedTextMessage{
+		Text:        &text,
+		ContextInfo: contextInfo,
+	}
 	sendResponse, err := client.SendMessage(context.Background(), jid, &message)
 	if err != nil {
 		panic(err)

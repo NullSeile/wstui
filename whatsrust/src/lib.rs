@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    ffi::{c_char, c_void},
+    ffi::{CStr, CString, c_char, c_void},
     sync::{Arc, Mutex},
 };
 
@@ -26,14 +26,12 @@ impl From<String> for JID {
 
 impl From<&CJID> for JID {
     fn from(cjid: &CJID) -> Self {
-        JID(unsafe { std::ffi::CStr::from_ptr(*cjid) }
-            .to_string_lossy()
-            .into())
+        JID(unsafe { CStr::from_ptr(*cjid) }.to_string_lossy().into())
     }
 }
 impl From<&JID> for CJID {
     fn from(jid: &JID) -> Self {
-        std::ffi::CString::new(jid.0.as_ref()).unwrap().into_raw()
+        CString::new(jid.0.as_ref()).unwrap().into_raw()
     }
 }
 
@@ -60,6 +58,7 @@ struct CMessageInfo {
     sender: CJID,
     timestamp: i64,
     quote_id: *const c_char,
+    is_read: bool,
 }
 
 #[repr(C)]
@@ -102,6 +101,7 @@ pub struct MessageInfo {
     pub sender: JID,
     pub timestamp: i64,
     pub quote_id: Option<Arc<str>>,
+    pub is_read: bool,
 }
 
 enum MessageType {
@@ -155,19 +155,19 @@ pub struct GroupInfo {
 
 impl From<&CContact> for Contact {
     fn from(ccontact: &CContact) -> Self {
-        let first_name = unsafe { std::ffi::CStr::from_ptr(ccontact.first_name) }
+        let first_name = unsafe { CStr::from_ptr(ccontact.first_name) }
             .to_string_lossy()
             .into_owned()
             .into();
-        let full_name = unsafe { std::ffi::CStr::from_ptr(ccontact.full_name) }
+        let full_name = unsafe { CStr::from_ptr(ccontact.full_name) }
             .to_string_lossy()
             .into_owned()
             .into();
-        let push_name = unsafe { std::ffi::CStr::from_ptr(ccontact.push_name) }
+        let push_name = unsafe { CStr::from_ptr(ccontact.push_name) }
             .to_string_lossy()
             .into_owned()
             .into();
-        let business_name = unsafe { std::ffi::CStr::from_ptr(ccontact.business_name) }
+        let business_name = unsafe { CStr::from_ptr(ccontact.business_name) }
             .to_string_lossy()
             .into_owned()
             .into();
@@ -191,7 +191,7 @@ type CHistorySyncCallback = extern "C" fn(u32, *mut c_void);
 unsafe extern "C" {
     fn C_NewClient(db_path: *const c_char);
     fn C_Connect(qr_cb: CQrCallback, data: *mut c_void) -> bool;
-    fn C_SendMessage(jid: CJID, message: *const c_char);
+    fn C_SendMessage(jid: CJID, message: *const c_char, quoted_message: *const CMessage);
     fn C_AddEventHandlers();
     fn C_GetAllContacts() -> CContactsMapResult;
     fn C_GetJoinedGroups() -> CGetGroupInfoResult;
@@ -208,7 +208,7 @@ unsafe extern "C" {
 pub struct DownloadFailed;
 
 pub fn download_file(file_id: &FileId) -> Result<(), DownloadFailed> {
-    let file_id_c = std::ffi::CString::new(file_id.as_ref()).unwrap();
+    let file_id_c = CString::new(file_id.as_ref()).unwrap();
     let code = unsafe { C_DownloadFile(file_id_c.as_ptr()) };
     if code == 0 {
         Ok(())
@@ -218,9 +218,9 @@ pub fn download_file(file_id: &FileId) -> Result<(), DownloadFailed> {
 }
 
 pub fn pair_phone(phone: &str) -> String {
-    let phone_c = std::ffi::CString::new(phone).unwrap();
+    let phone_c = CString::new(phone).unwrap();
     let result = unsafe { C_PairPhone(phone_c.as_ptr()) };
-    let result_str = unsafe { std::ffi::CStr::from_ptr(result) }
+    let result_str = unsafe { CStr::from_ptr(result) }
         .to_string_lossy()
         .into_owned();
     result_str
@@ -235,14 +235,14 @@ pub fn set_log_handler(log_fn: LogFn) {
 }
 
 pub fn new_client(db_path: &str) {
-    let db_path_c = std::ffi::CString::new(db_path).unwrap();
+    let db_path_c = CString::new(db_path).unwrap();
     unsafe { C_NewClient(db_path_c.as_ptr()) }
 }
 
 impl CallbackTranslator<*const CMessage> for Message {
     unsafe fn to_rust(ptr: *const CMessage) -> Self {
         let msg = unsafe { &(*ptr) };
-        let id = unsafe { std::ffi::CStr::from_ptr(msg.info.id) }
+        let id = unsafe { CStr::from_ptr(msg.info.id) }
             .to_string_lossy()
             .into_owned()
             .into();
@@ -254,7 +254,7 @@ impl CallbackTranslator<*const CMessage> for Message {
             None
         } else {
             Some(
-                unsafe { std::ffi::CStr::from_ptr(c_quote_id) }
+                unsafe { CStr::from_ptr(c_quote_id) }
                     .to_string_lossy()
                     .into_owned()
                     .into(),
@@ -265,7 +265,7 @@ impl CallbackTranslator<*const CMessage> for Message {
             MessageType::Text => {
                 let text_message = unsafe { &*(msg.message as *const CTextMessage) };
 
-                let message = unsafe { std::ffi::CStr::from_ptr(text_message.text) }
+                let message = unsafe { CStr::from_ptr(text_message.text) }
                     .to_string_lossy()
                     .into_owned()
                     .into();
@@ -274,12 +274,12 @@ impl CallbackTranslator<*const CMessage> for Message {
             MessageType::Image => {
                 let image_message = unsafe { &*(msg.message as *const CImageMessage) };
 
-                let path = unsafe { std::ffi::CStr::from_ptr(image_message.path) }
+                let path = unsafe { CStr::from_ptr(image_message.path) }
                     .to_string_lossy()
                     .into_owned()
                     .into();
 
-                let file_id = unsafe { std::ffi::CStr::from_ptr(image_message.file_id) }
+                let file_id = unsafe { CStr::from_ptr(image_message.file_id) }
                     .to_string_lossy()
                     .into_owned()
                     .into();
@@ -288,7 +288,7 @@ impl CallbackTranslator<*const CMessage> for Message {
                     None
                 } else {
                     Some(
-                        unsafe { std::ffi::CStr::from_ptr(image_message.caption) }
+                        unsafe { CStr::from_ptr(image_message.caption) }
                             .to_string_lossy()
                             .into_owned()
                             .into(),
@@ -309,6 +309,7 @@ impl CallbackTranslator<*const CMessage> for Message {
                 sender,
                 timestamp: msg.info.timestamp,
                 quote_id,
+                is_read: msg.info.is_read,
             },
             message,
         }
@@ -335,7 +336,7 @@ setup_handler!(
 
 impl CallbackTranslator<*const c_char> for String {
     unsafe fn to_rust(ptr: *const c_char) -> String {
-        let c_str = unsafe { std::ffi::CStr::from_ptr(ptr) };
+        let c_str = unsafe { CStr::from_ptr(ptr) };
         c_str.to_string_lossy().into_owned()
     }
 }
@@ -345,10 +346,63 @@ pub fn disconnect() {
     unsafe { C_Disconnect() }
 }
 
-pub fn send_message(jid: &JID, message: &str) {
-    let message_c = std::ffi::CString::new(message).unwrap();
+pub fn send_message(jid: &JID, message: &str, quoted_message: Option<&Message>) {
+    let message_c = CString::new(message).unwrap();
     let jid_c = CJID::from(jid);
-    unsafe { C_SendMessage(jid_c, message_c.as_ptr()) }
+
+    if let Some(quoted_message) = quoted_message {
+        let quoted_chat = CJID::from(&quoted_message.info.chat);
+        let quoted_sender = CJID::from(&quoted_message.info.sender);
+        let quoted_id = CString::new(quoted_message.info.id.as_ref()).unwrap();
+
+        let message_content = match quoted_message.message {
+            MessageContent::Text(ref text) => {
+                let text = CString::new(text.as_ref()).unwrap();
+                let text_message = Box::new(CTextMessage {
+                    text: text.into_raw(),
+                });
+                (
+                    MessageType::Text,
+                    Box::into_raw(text_message) as *const c_void,
+                )
+            }
+            MessageContent::Image(ref image) => {
+                let image_message = Box::new(CImageMessage {
+                    path: CString::new(image.path.as_ref()).unwrap().into_raw(),
+                    file_id: CString::new(image.file_id.as_ref()).unwrap().into_raw(),
+                    caption: image.caption.as_ref().map_or(std::ptr::null(), |cap| {
+                        CString::new(cap.as_ref()).unwrap().into_raw()
+                    }),
+                });
+                (
+                    MessageType::Image,
+                    Box::into_raw(image_message) as *const c_void,
+                )
+            }
+        };
+
+        let message = CMessage {
+            info: CMessageInfo {
+                id: quoted_id.as_ptr(),
+                chat: quoted_chat,
+                sender: quoted_sender,
+                timestamp: quoted_message.info.timestamp,
+                quote_id: quoted_message
+                    .info
+                    .quote_id
+                    .as_ref()
+                    .map_or(std::ptr::null(), |q| {
+                        CString::new(q.as_ref()).unwrap().into_raw()
+                    }),
+                is_read: quoted_message.info.is_read,
+            },
+            message_type: message_content.0 as i8,
+            message: message_content.1,
+        };
+        unsafe { C_SendMessage(jid_c, message_c.as_ptr(), &message as *const _) }
+    } else {
+        unsafe { C_SendMessage(jid_c, message_c.as_ptr(), std::ptr::null()) }
+    }
 }
 
 pub fn get_joined_groups() -> Vec<GroupInfo> {
@@ -359,7 +413,7 @@ pub fn get_joined_groups() -> Vec<GroupInfo> {
         .iter()
         .map(|group| {
             let jid: JID = (&group.jid).into();
-            let name = unsafe { std::ffi::CStr::from_ptr(group.name) }
+            let name = unsafe { CStr::from_ptr(group.name) }
                 .to_string_lossy()
                 .into_owned()
                 .into();

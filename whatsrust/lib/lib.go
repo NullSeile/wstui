@@ -100,10 +100,20 @@ const (
 func DownloadFromFileInfo(client *whatsmeow.Client, info DownloadInfo) ([]byte, error) {
 	return client.DownloadMediaWithPath(info.DirectPath, info.FileEncSha256, info.FileSha256, info.MediaKey, info.Size, info.MediaType, mediaTypeToMMSType[info.MediaType])
 }
-func DownloadFromFileId(client *whatsmeow.Client, fileId string) (string, int) {
+func FileIdToDownloadInfo(fileId string) (DownloadInfo, error) {
 	var info DownloadInfo
-	json.Unmarshal([]byte(fileId), &info)
+	err := json.Unmarshal([]byte(fileId), &info)
+	if err != nil {
+		return info, err
+	}
 	if info.Version != downloadInfoVersion {
+		return info, err
+	}
+	return info, nil
+}
+func DownloadFromFileId(client *whatsmeow.Client, fileId string) (string, int) {
+	info, err := FileIdToDownloadInfo(fileId)
+	if err != nil {
 		return "", FileStatusDownloadFailed
 	}
 

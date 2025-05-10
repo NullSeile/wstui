@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
-use chrono::{DateTime, Local};
-use log::info;
+use chrono::{DateTime, Datelike, Local};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -56,11 +55,22 @@ fn render_message(
     app: &mut App,
     area: Rect,
 ) {
-    let timestamp = if let Some(datetime) = DateTime::from_timestamp(message.info.timestamp, 0) {
-        let local_time: DateTime<Local> = datetime.into();
-        local_time.to_rfc2822()
-    } else {
-        "".to_string()
+    let timestamp = {
+        let local_time: DateTime<Local> = DateTime::from_timestamp(message.info.timestamp, 0)
+            .unwrap()
+            .into();
+        if local_time.date_naive() == Local::now().date_naive() {
+            local_time.format("%H:%M").to_string()
+        } else if local_time.date_naive() == (Local::now() - chrono::Duration::days(1)).date_naive()
+        {
+            local_time.format("Yesterday %H:%M").to_string()
+        } else if local_time > (Local::now() - chrono::Duration::days(7)) {
+            local_time.format("%a %H:%M").to_string()
+        } else if local_time.year() == Local::now().year() {
+            local_time.format("%d %b %H:%M").to_string()
+        } else {
+            local_time.format("%Y %d %b %H:%M").to_string()
+        }
     }
     .italic();
 
@@ -69,13 +79,17 @@ fn render_message(
     } else {
         message.info.sender.clone().into()
     };
-    let sender_widget = Line::from_iter([
+
+    let mut header = vec![
         sender_name.to_string().into(),
         " (".into(),
         timestamp,
         ")".into(),
-    ])
-    .bold();
+    ];
+    if message.info.is_read {
+        header.push(" ✓".into());
+    }
+    let sender_widget = Line::from_iter(header).bold();
 
     let quoted_text = message.info.quote_id.as_ref().and_then(|quote_id| {
         let chat_messages = app.messages.get(app.selected_chat_jid.as_ref().unwrap());
@@ -217,17 +231,8 @@ pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<(
     // Important: this changes the state's offset to be the beginning of the now viewable items
     app.message_list_state.offset = first_visible_index;
 
-    // Get our set highlighted symbol (if one was set)
-    // let highlight_symbol = self.highlight_symbol.unwrap_or("");
-    // let blank_symbol = " ".repeat(highlight_symbol.width());
-
     let mut current_height = 0;
 
-    // let selection_spacing = match self.highlight_spacing {
-    //     HighlightSpacing::Always => true,
-    //     HighlightSpacing::WhenSelected => state.selected.is_some(),
-    //     HighlightSpacing::Never => false,
-    // };
     for (i, item) in items
         .iter()
         .enumerate()
@@ -238,19 +243,30 @@ pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<(
 
         let (x, y) = {
             current_height += item_height as u16;
-            (list_area.left(), list_area.bottom() - current_height)
+            (
+                list_area.left(),
+                // list_area.bottom().saturating_sub(current_height),
+                list_area.bottom() - current_height,
+            )
         };
 
         let row_area = Rect {
             x,
             y,
             width: list_area.width,
+            // height: (item_height as u16).min(y),
             height: item_height as u16,
         };
 
+        if app.message_list_state.selected == Some(i)
+            && app.message_list_state.selected_message == Some(item.info.id.clone())
+        {
+            app.message_list_state.offset = i;
+        }
+
         let is_selected = app.message_list_state.selected == Some(i);
         if is_selected {
-            app.selected_message = Some(item.info.id.clone())
+            app.message_list_state.selected_message = Some(item.info.id.clone())
         };
 
         let item_area = row_area;
@@ -292,6 +308,7 @@ fn get_items_bounds(
     for item in items.iter().skip(offset) {
         let item_height = message_height(item, list_width, app);
         if height_from_offset + item_height > max_height {
+            // if height_from_offset > max_height {
             break;
         }
 
@@ -414,6 +431,13 @@ fn apply_scroll_padding_to_selected_index(
 pub struct MessageListState {
     pub selected: Option<usize>,
     pub offset: usize,
+    selected_message: Option<wr::MessageId>,
+}
+
+impl MessageListState {
+    pub fn get_selected_message(&self) -> Option<wr::MessageId> {
+        self.selected_message.clone()
+    }
 }
 
 impl MessageListState {

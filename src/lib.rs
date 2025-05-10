@@ -111,7 +111,7 @@ impl Default for App<'_> {
         // let connection = Connection::open("whatsapp.db").unwrap();
 
         let mut picker = Picker::from_query_stdio().unwrap();
-        picker.set_protocol_type(ratatui_image::picker::ProtocolType::Halfblocks);
+        // picker.set_protocol_type(ratatui_image::picker::ProtocolType::Halfblocks);
 
         Self {
             db_handler: DatabaseHandler::new("whatsapp.db"),
@@ -197,6 +197,7 @@ impl App<'_> {
             }
 
             for msg in messages {
+                info!("Handling message: {:?}", msg);
                 self.db_handler.add_message(&msg);
                 self.add_message(msg);
 
@@ -244,20 +245,19 @@ impl App<'_> {
                     }
                     KeyCode::Char('v') if key.modifiers == KeyModifiers::CONTROL => {
                         // TODO: Make this not horrible
-                        if let Some(chat_jid) = self.selected_chat_jid.clone() {
-                            if let Some(msg_id) = &self.selected_message {
-                                if let Some(message) = self.messages.get_mut(&chat_jid) {
-                                    if let Some(msg) = message.get(msg_id) {
-                                        if let wr::MessageContent::Image(image) = &msg.message {
-                                            if let Some(Metadata::File(meta)) =
-                                                self.metadata.get(msg_id)
-                                            {
-                                                if let FileMeta::Downloaded = meta {
-                                                    self.active_image = Some(image.path.clone());
-                                                    // info!("Opening image: {:?}", msg);
-                                                }
-                                            }
-                                        }
+                        if let (Some(chat_jid), Some(msg_id)) =
+                            (self.selected_chat_jid.clone(), &self.selected_message)
+                        {
+                            if let Some(msg) = self
+                                .messages
+                                .get(&chat_jid)
+                                .and_then(|msgs| msgs.get(msg_id))
+                            {
+                                if let wr::MessageContent::Image(image) = &msg.message {
+                                    if let Some(Metadata::File(FileMeta::Downloaded)) =
+                                        self.metadata.get(msg_id)
+                                    {
+                                        self.active_image = Some(image.path.clone());
                                     }
                                 }
                             }
@@ -277,8 +277,13 @@ impl App<'_> {
                     }
                     KeyCode::Enter | KeyCode::Char('\n') => {
                         if let Some(c) = self.selected_chat_jid.clone() {
-                            let msg = self.input_widget.lines().join("\n");
-                            wr::send_message(&c, msg.as_str());
+                            let text = self.input_widget.lines().join("\n");
+                            let quoted_message = self.selected_message.as_ref().and_then(|msg| {
+                                self.messages.get(&c).and_then(|messages| messages.get(msg))
+                            });
+                            info!("{:?}", self.selected_message);
+                            // ratatui::restore();
+                            wr::send_message(&c, text.as_str(), quoted_message);
                             self.input_widget.select_all();
                             self.input_widget.delete_next_char();
                         }
@@ -336,16 +341,6 @@ impl App<'_> {
                     chat.name = name;
                 },
             );
-
-            // if let Some(chat) = self.chats.get_mut(&jid) {
-            //     chat.name = name;
-            // } else {
-            //     self.add_new_chat(Chat {
-            //         jid,
-            //         name,
-            //         last_message_time: None,
-            //     });
-            // }
         }
 
         for group_info in wr::get_joined_groups() {
@@ -359,16 +354,6 @@ impl App<'_> {
                     chat.name = Some(group_info.name);
                 },
             );
-
-            // if let Some(chat) = self.chats.get_mut(&group_info.jid) {
-            //     chat.name = Some(group_info.name.clone());
-            // } else {
-            //     self.add_new_chat(Chat {
-            //         jid: group_info.jid,
-            //         name: Some(group_info.name),
-            //         last_message_time: None,
-            //     });
-            // };
         }
     }
 
@@ -381,14 +366,4 @@ impl App<'_> {
         });
         self.sorted_chats = entries;
     }
-
-    // fn add_new_chat(&mut self, chat: Chat) {
-    //     if chat.jid.0.to_string() == *"34642137933@s.whatsapp.net" {
-    //         error!("{:?}", chat);
-    //     }
-    //
-    //     self.db_handler.add_chat(&chat);
-    //
-    //     self.chats.insert(chat.jid.clone(), chat);
-    // }
 }
