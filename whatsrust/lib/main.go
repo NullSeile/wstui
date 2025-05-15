@@ -37,6 +37,7 @@ typedef struct {
 	JID chat;
 	JID sender;
 	int64_t timestamp;
+	bool isFromMe;
 	char* quoteID;
 	bool isRead;
 } MessageInfo;
@@ -290,8 +291,9 @@ const (
 func CMessageToWaE2EMessage(cmsg *C.Message) (types.MessageInfo, *waE2E.Message) {
 	info := types.MessageInfo{
 		MessageSource: types.MessageSource{
-			Chat:   cToJid(cmsg.info.chat),
-			Sender: cToJid(cmsg.info.sender),
+			Chat:     cToJid(cmsg.info.chat),
+			Sender:   cToJid(cmsg.info.sender),
+			IsFromMe: bool(cmsg.info.isFromMe),
 		},
 		ID:        C.GoString(cmsg.info.id),
 		Timestamp: time.Unix(int64(cmsg.info.timestamp), 0),
@@ -335,6 +337,7 @@ func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
 		chat:      jidToC(chat),
 		sender:    jidToC(sender),
 		timestamp: C.int64_t(timestamp),
+		isFromMe:  C.bool(info.IsFromMe),
 		quoteID:   nil,
 		isRead:    C.bool(false),
 		// isRead:    C.bool(info.IsFromMe),

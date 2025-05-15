@@ -68,10 +68,10 @@ impl DatabaseHandler {
 
                     {
                         let mut text_stmt = tx
-                            .prepare("INSERT OR REPLACE INTO text_messages (id, chat_jid, sender_jid, timestamp, quote_id, read, message) VALUES (?, ?, ?, ?, ?, ?, ?)")
+                            .prepare("INSERT OR REPLACE INTO text_messages (id, chat_jid, sender_jid, timestamp, quote_id, is_from_me, read, message) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
                             .unwrap();
                         let mut image_stmt = tx
-                            .prepare("INSERT OR REPLACE INTO image_messages (id, chat_jid, sender_jid, timestamp, quote_id, read, path, file_id, caption) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                            .prepare("INSERT OR REPLACE INTO image_messages (id, chat_jid, sender_jid, timestamp, quote_id, is_from_me, read, path, file_id, caption) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
                             .unwrap();
                         for msg in &messages {
                             match &msg.message {
@@ -83,6 +83,7 @@ impl DatabaseHandler {
                                             msg.info.sender.0,
                                             msg.info.timestamp,
                                             msg.info.quote_id,
+                                            msg.info.is_from_me,
                                             msg.info.is_read,
                                             text,
                                         ])
@@ -96,6 +97,7 @@ impl DatabaseHandler {
                                             msg.info.sender.0,
                                             msg.info.timestamp,
                                             msg.info.quote_id,
+                                            msg.info.is_from_me,
                                             msg.info.is_read,
                                             image.path,
                                             image.file_id,
@@ -178,9 +180,10 @@ impl DatabaseHandler {
                 let sender_jid: String = row.get(2).unwrap();
                 let timestamp: i64 = row.get(3).unwrap();
                 let quote_id: Option<String> = row.get(4).unwrap_or(None);
-                let is_read: bool = row.get(5).unwrap();
+                let is_from_me: bool = row.get(5).unwrap();
+                let is_read: bool = row.get(6).unwrap();
 
-                let message: String = row.get(6).unwrap();
+                let message: String = row.get(7).unwrap();
 
                 Ok(wr::Message {
                     info: wr::MessageInfo {
@@ -189,6 +192,7 @@ impl DatabaseHandler {
                         sender: sender_jid.into(),
                         timestamp,
                         quote_id: quote_id.map(|q| q.into()),
+                        is_from_me,
                         is_read,
                     },
                     message: wr::MessageContent::Text(message.into()),
@@ -204,11 +208,12 @@ impl DatabaseHandler {
                 let sender_jid: String = row.get(2).unwrap();
                 let timestamp: i64 = row.get(3).unwrap();
                 let quote_id: Option<String> = row.get(4).unwrap_or(None);
-                let is_read: bool = row.get(5).unwrap();
+                let is_from_me: bool = row.get(5).unwrap();
+                let is_read: bool = row.get(6).unwrap();
 
-                let path: String = row.get(6).unwrap();
-                let file_id: String = row.get(7).unwrap();
-                let caption: Option<String> = row.get(8).unwrap_or(None);
+                let path: String = row.get(7).unwrap();
+                let file_id: String = row.get(8).unwrap();
+                let caption: Option<String> = row.get(9).unwrap_or(None);
 
                 Ok(wr::Message {
                     info: wr::MessageInfo {
@@ -217,6 +222,7 @@ impl DatabaseHandler {
                         sender: sender_jid.into(),
                         timestamp,
                         quote_id: quote_id.map(|q| q.into()),
+                        is_from_me,
                         is_read,
                     },
                     message: wr::MessageContent::Image(wr::ImageContent {
@@ -254,6 +260,7 @@ impl DatabaseHandler {
                     sender_jid TEXT,
                     timestamp INTEGER,
                     quote_id TEXT,
+                    is_from_me INTEGER,
                     read INTEGER,
 
                     message TEXT
@@ -270,6 +277,7 @@ impl DatabaseHandler {
                     sender_jid TEXT,
                     timestamp INTEGER,
                     quote_id TEXT,
+                    is_from_me INTEGER,
                     read INTEGER,
 
                     path TEXT,

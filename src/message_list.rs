@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Datelike, Local};
+use log::info;
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Flex, Layout, Rect},
     style::{Style, Stylize},
     text::Line,
     widgets::{Block, Paragraph},
@@ -12,7 +13,7 @@ use ratatui_image::StatefulImage;
 use textwrap;
 use whatsrust as wr;
 
-use crate::{App, AppEvent, FileMeta, Metadata};
+use crate::{App, AppEvent, FileMeta, Metadata, SelectedWidget};
 
 fn message_height(message: &wr::Message, width: usize, app: &mut App) -> usize {
     let header_height = if message.info.quote_id.is_some() {
@@ -188,7 +189,15 @@ pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<(
     let chat_jid = app.selected_chat_jid.as_ref()?;
 
     let contact = app.chats.get(chat_jid).unwrap();
-    let block = Block::bordered().title(format!("Chat with {}", contact.get_name()));
+    let block = Block::bordered()
+        .title(format!("Chat with {}", contact.get_name()))
+        .border_style(Style::default().fg(
+            if let SelectedWidget::MessageList = app.selected_widget {
+                ratatui::style::Color::Green
+            } else {
+                ratatui::style::Color::White
+            },
+        ));
     frame.render_widget(&block, area);
 
     let list_area = block.inner(area);
@@ -258,18 +267,26 @@ pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<(
             height: item_height as u16,
         };
 
-        if app.message_list_state.selected == Some(i)
-            && app.message_list_state.selected_message == Some(item.info.id.clone())
-        {
-            app.message_list_state.offset = i;
-        }
+        // if app.message_list_state.selected == Some(i)
+        //     && app.message_list_state.selected_message == Some(item.info.id.clone())
+        // {
+        //     app.message_list_state.offset = i;
+        // }
 
         let is_selected = app.message_list_state.selected == Some(i);
         if is_selected {
+            info!("Selected message: {:?}", item);
             app.message_list_state.selected_message = Some(item.info.id.clone())
         };
 
         let item_area = row_area;
+        // let item_area = Layout::horizontal([Constraint::Ratio(2, 3)])
+        //     .flex(if item.info.is_from_me {
+        //         Flex::End
+        //     } else {
+        //         Flex::Start
+        //     })
+        //     .split(row_area)[0];
 
         if is_selected {
             let style = Style::default()
@@ -431,7 +448,7 @@ fn apply_scroll_padding_to_selected_index(
 pub struct MessageListState {
     pub selected: Option<usize>,
     pub offset: usize,
-    selected_message: Option<wr::MessageId>,
+    pub selected_message: Option<wr::MessageId>,
 }
 
 impl MessageListState {
@@ -441,6 +458,12 @@ impl MessageListState {
 }
 
 impl MessageListState {
+    pub fn reset(&mut self) {
+        self.selected = None;
+        self.offset = 0;
+        self.selected_message = None;
+    }
+
     pub fn select(&mut self, index: Option<usize>) {
         self.selected = index;
         if index.is_none() {
@@ -476,7 +499,7 @@ impl MessageListState {
     }
 }
 
-fn get_quoted_text(msg: &wr::Message) -> Arc<str> {
+pub fn get_quoted_text(msg: &wr::Message) -> Arc<str> {
     match &msg.message {
         wr::MessageContent::Text(text) => text.clone(),
         wr::MessageContent::Image(wr::ImageContent {

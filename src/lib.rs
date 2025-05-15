@@ -4,6 +4,7 @@ use std::{collections::HashMap, sync::Arc};
 pub mod db;
 pub mod message_list;
 pub mod ui;
+pub mod vim;
 
 use db::DatabaseHandler;
 use log::{error, info};
@@ -14,6 +15,7 @@ use ratatui::widgets::Block;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
 use tui_textarea::TextArea;
+use vim::Vim;
 use whatsrust as wr;
 
 pub fn get_contact_name(contact: &wr::Contact) -> Option<Arc<str>> {
@@ -71,6 +73,12 @@ pub enum AppEvent {
     DownloadFile(wr::MessageId, wr::FileId),
 }
 
+pub enum SelectedWidget {
+    ChatList,
+    Input,
+    MessageList,
+}
+
 pub struct App<'a> {
     // pub connection: Connection,
     pub db_handler: DatabaseHandler,
@@ -85,14 +93,18 @@ pub struct App<'a> {
     pub message_queue: Arc<Mutex<Vec<wr::Message>>>,
     pub event_queue: Arc<Mutex<Vec<AppEvent>>>,
 
+    pub quoting_message: Option<wr::Message>,
     pub message_list_state: MessageListState,
     pub metadata: MetadataStorage,
     pub image_cache: HashMap<Arc<str>, StatefulProtocol>,
     pub picker: Picker,
-    pub selected_message: Option<wr::MessageId>,
     pub active_image: Option<wr::MessageId>,
 
+    pub selected_widget: SelectedWidget,
+
+    pub vim: Vim,
     pub input_widget: TextArea<'a>,
+    pub input_border: Block<'a>,
 
     pub should_quit: bool,
 }
@@ -100,22 +112,16 @@ pub struct App<'a> {
 impl Default for App<'_> {
     fn default() -> Self {
         let mut input_widget = TextArea::default();
-        input_widget.set_cursor_line_style(Style::default());
+        // input_widget.set_cursor_line_style(vim::Mode::Nor::default());
+        input_widget.set_cursor_style(vim::Mode::Insert.cursor_style());
+        // input_widget.set_block(vim::Mode::Normal.block());
         input_widget.set_placeholder_text("Type a message...");
-        input_widget.set_block(
-            Block::default()
-                .title("Input")
-                .borders(ratatui::widgets::Borders::ALL),
-        );
-
-        // let connection = Connection::open("whatsapp.db").unwrap();
 
         let mut picker = Picker::from_query_stdio().unwrap();
         // picker.set_protocol_type(ratatui_image::picker::ProtocolType::Halfblocks);
 
         Self {
             db_handler: DatabaseHandler::new("whatsapp.db"),
-            // connection,
             messages: MessagesStorage::new(),
             chats: ChatList::new(),
             sorted_chats: Vec::new(),
@@ -127,10 +133,12 @@ impl Default for App<'_> {
             message_queue: Arc::new(Mutex::new(Vec::new())),
             event_queue: Arc::new(Mutex::new(Vec::new())),
             image_cache: HashMap::new(),
-            selected_message: None,
+            quoting_message: None,
             active_image: None,
             picker,
-            // picker: Picker::from_query_stdio().unwrap(),
+            selected_widget: SelectedWidget::ChatList,
+            vim: Vim::new(vim::Mode::Insert),
+            input_border: vim::Mode::Insert.block(),
             input_widget,
             should_quit: false,
         }
@@ -215,20 +223,135 @@ impl App<'_> {
     pub fn on_event(&mut self, event: Event) {
         if let Event::Key(key) = event {
             if key.kind == KeyEventKind::Press {
-                match key.code {
-                    KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
-                        self.db_handler.stop();
-                        self.should_quit = true;
-                        return;
+                if key.code == KeyCode::Char('q') && key.modifiers == KeyModifiers::CONTROL {
+                    self.db_handler.stop();
+                    self.should_quit = true;
+                    return;
+                }
+
+                match self.selected_widget {
+                    SelectedWidget::ChatList => {
+                        if key.code == KeyCode::Char('l') && key.modifiers == KeyModifiers::CONTROL
+                        {
+                            self.selected_widget = SelectedWidget::Input;
+                            self.input_widget.select_all();
+                            return;
+                        }
                     }
-                    KeyCode::Char('n') | KeyCode::Char('p')
-                        if key.modifiers == KeyModifiers::CONTROL =>
-                    {
+                    SelectedWidget::Input => {
+                        if key.code == KeyCode::Char('k') && key.modifiers == KeyModifiers::CONTROL
+                        {
+                            self.selected_widget = SelectedWidget::MessageList;
+                            return;
+                        }
+                        if key.code == KeyCode::Char('h') && key.modifiers == KeyModifiers::CONTROL
+                        {
+                            self.selected_widget = SelectedWidget::ChatList;
+                            return;
+                        }
+                    }
+                    SelectedWidget::MessageList => {
+                        if key.code == KeyCode::Char('j') && key.modifiers == KeyModifiers::CONTROL
+                        {
+                            self.selected_widget = SelectedWidget::Input;
+                            return;
+                        }
+                        if key.code == KeyCode::Char('h') && key.modifiers == KeyModifiers::CONTROL
+                        {
+                            self.selected_widget = SelectedWidget::ChatList;
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        match self.selected_widget {
+            SelectedWidget::ChatList => {
+                self.chat_list_on_event(&event);
+            }
+            SelectedWidget::MessageList => {
+                self.message_list_on_event(&event);
+            }
+            SelectedWidget::Input => {
+                self.input_on_event(&event);
+            }
+        }
+
+        if let Event::Key(key) = event {
+            if key.kind == KeyEventKind::Press {
+                match key.code {
+                    // KeyCode::Char('v') if key.modifiers == KeyModifiers::CONTROL => {
+                    //     // TODO: Make this not horrible
+                    //     if let (Some(chat_jid), Some(msg_id)) = (
+                    //         self.selected_chat_jid.clone(),
+                    //         &self.message_list_state.selected_message,
+                    //     ) {
+                    //         if let Some(msg) = self
+                    //             .messages
+                    //             .get(&chat_jid)
+                    //             .and_then(|msgs| msgs.get(msg_id))
+                    //         {
+                    //             if let wr::MessageContent::Image(image) = &msg.message {
+                    //                 if let Some(Metadata::File(FileMeta::Downloaded)) =
+                    //                     self.metadata.get(msg_id)
+                    //                 {
+                    //                     self.active_image = Some(image.path.clone());
+                    //                 }
+                    //             }
+                    //         }
+                    //     }
+                    // }
+                    KeyCode::Esc => {
+                        self.active_image = None;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn input_on_event(&mut self, event: &Event) {
+        if let Event::Key(key) = *event {
+            if key.code == KeyCode::Char('r') && key.modifiers == KeyModifiers::CONTROL {
+                self.quoting_message = None;
+                return;
+            }
+            if key.code == KeyCode::Char('x') && key.modifiers == KeyModifiers::CONTROL {
+                if let Some(c) = self.selected_chat_jid.clone() {
+                    let text = self.input_widget.lines().join("\n");
+                    wr::send_message(&c, text.as_str(), self.quoting_message.as_ref());
+                    self.input_widget.select_all();
+                    self.input_widget.delete_next_char();
+                }
+                return;
+            }
+        }
+
+        self.vim = match self
+            .vim
+            .transition(event.clone().into(), &mut self.input_widget)
+        {
+            vim::Transition::Mode(mode) if self.vim.mode != mode => {
+                self.input_border = mode.block();
+                self.input_widget.set_cursor_style(mode.cursor_style());
+                Vim::new(mode)
+            }
+            vim::Transition::Nop | vim::Transition::Mode(_) => self.vim.clone(),
+            vim::Transition::Pending(input) => self.vim.with_pending(input),
+        };
+    }
+
+    fn chat_list_on_event(&mut self, event: &Event) {
+        if let Event::Key(key) = event {
+            if key.kind == KeyEventKind::Press {
+                match key.code {
+                    KeyCode::Char('j') | KeyCode::Char('k') => {
                         if let Some(index) = self.selected_chat_index {
                             let mut delta: isize = 0;
-                            if key.code == KeyCode::Char('n') {
+                            if key.code == KeyCode::Char('j') {
                                 delta = 1;
-                            } else if key.code == KeyCode::Char('p') {
+                            } else if key.code == KeyCode::Char('k') {
                                 delta = -1;
                             }
                             let next_index = (index as isize + delta)
@@ -241,57 +364,56 @@ impl App<'_> {
                             self.selected_chat_index = Some(0);
                             self.selected_chat_jid = Some(self.sorted_chats[0].jid.clone());
                         }
-                        self.message_list_state.select(None);
+                        self.message_list_state.reset();
                     }
-                    KeyCode::Char('v') if key.modifiers == KeyModifiers::CONTROL => {
-                        // TODO: Make this not horrible
-                        if let (Some(chat_jid), Some(msg_id)) =
-                            (self.selected_chat_jid.clone(), &self.selected_message)
-                        {
+                    KeyCode::Enter => {
+                        if let Some(index) = self.selected_chat_index {
+                            let chat_jid = self.sorted_chats[index].jid.clone();
+                            self.selected_chat_jid = Some(chat_jid);
+                            self.message_list_state.reset();
+                            self.selected_widget = SelectedWidget::Input;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn message_list_on_event(&mut self, event: &Event) {
+        if let Event::Key(key) = event {
+            if key.kind == KeyEventKind::Press {
+                match key.code {
+                    KeyCode::Char('j') => {
+                        self.message_list_state.select_previous();
+                    }
+                    KeyCode::Char('k') => {
+                        self.message_list_state.select_next();
+                    }
+                    KeyCode::Char('r') => {
+                        // if key.modifiers == KeyModifiers::CONTROL {
+                        //     self.quoting_message = None;
+                        //     return;
+                        // }
+                        if let (Some(chat_jid), Some(msg_id)) = (
+                            self.selected_chat_jid.clone(),
+                            &self.message_list_state.selected_message,
+                        ) {
                             if let Some(msg) = self
                                 .messages
                                 .get(&chat_jid)
                                 .and_then(|msgs| msgs.get(msg_id))
                             {
-                                if let wr::MessageContent::Image(image) = &msg.message {
-                                    if let Some(Metadata::File(FileMeta::Downloaded)) =
-                                        self.metadata.get(msg_id)
-                                    {
-                                        self.active_image = Some(image.path.clone());
-                                    }
-                                }
+                                self.quoting_message = Some(msg.clone());
+                                self.selected_widget = SelectedWidget::Input;
                             }
                         }
                     }
                     KeyCode::Esc => {
-                        if self.active_image.is_none() {
-                            self.message_list_state.select(None);
-                        }
-                        self.active_image = None;
-                    }
-                    KeyCode::Up => {
-                        self.message_list_state.select_next();
-                    }
-                    KeyCode::Down => {
-                        self.message_list_state.select_previous();
-                    }
-                    KeyCode::Enter | KeyCode::Char('\n') => {
-                        if let Some(c) = self.selected_chat_jid.clone() {
-                            let text = self.input_widget.lines().join("\n");
-                            let quoted_message = self.selected_message.as_ref().and_then(|msg| {
-                                self.messages.get(&c).and_then(|messages| messages.get(msg))
-                            });
-                            info!("{:?}", self.selected_message);
-                            // ratatui::restore();
-                            wr::send_message(&c, text.as_str(), quoted_message);
-                            self.input_widget.select_all();
-                            self.input_widget.delete_next_char();
-                        }
-                        return;
+                        self.message_list_state.reset();
                     }
                     _ => {}
                 }
-                self.input_widget.input(key);
             }
         }
     }

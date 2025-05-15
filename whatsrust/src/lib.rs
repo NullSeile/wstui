@@ -57,6 +57,7 @@ struct CMessageInfo {
     chat: CJID,
     sender: CJID,
     timestamp: i64,
+    is_from_me: bool,
     quote_id: *const c_char,
     is_read: bool,
 }
@@ -100,6 +101,7 @@ pub struct MessageInfo {
     pub chat: JID,
     pub sender: JID,
     pub timestamp: i64,
+    pub is_from_me: bool,
     pub quote_id: Option<Arc<str>>,
     pub is_read: bool,
 }
@@ -308,6 +310,7 @@ impl CallbackTranslator<*const CMessage> for Message {
                 chat,
                 sender,
                 timestamp: msg.info.timestamp,
+                is_from_me: msg.info.is_from_me,
                 quote_id,
                 is_read: msg.info.is_read,
             },
@@ -387,6 +390,7 @@ pub fn send_message(jid: &JID, message: &str, quoted_message: Option<&Message>) 
                 chat: quoted_chat,
                 sender: quoted_sender,
                 timestamp: quoted_message.info.timestamp,
+                is_from_me: quoted_message.info.is_from_me,
                 quote_id: quoted_message
                     .info
                     .quote_id

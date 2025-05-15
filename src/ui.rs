@@ -1,8 +1,12 @@
-use crate::{App, message_list::render_messages};
+use crate::{
+    App, SelectedWidget,
+    message_list::{get_quoted_text, render_messages},
+};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    widgets::{Block, Borders, List, ListState},
+    style::{Style, Stylize},
+    widgets::{Block, Borders, List, ListState, Paragraph},
 };
 use ratatui_image::{Resize, StatefulImage};
 use tui_logger::TuiLoggerWidget;
@@ -48,22 +52,57 @@ fn render_contacts(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let percent = app.history_sync_percent.lock().unwrap();
     let list = List::new(items)
-        .block(Block::bordered().title(if let Some(p) = *percent {
-            format!("Contacts ({p}%)")
-        } else {
-            "Contacts".to_string()
-        }))
+        .block(
+            Block::bordered()
+                .title(if let Some(p) = *percent {
+                    format!("Contacts ({p}%)")
+                } else {
+                    "Contacts".to_string()
+                })
+                .border_style(Style::default().fg(
+                    if let SelectedWidget::ChatList = app.selected_widget {
+                        ratatui::style::Color::Green
+                    } else {
+                        ratatui::style::Color::White
+                    },
+                )),
+        )
         .highlight_style(ratatui::style::Style::default().fg(ratatui::style::Color::Green));
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
 pub fn render_chats(frame: &mut Frame, app: &mut App, area: Rect) {
-    let [chat_area, input_area] =
-        Layout::vertical([Constraint::Percentage(100), Constraint::Min(1 + 2)]).areas(area);
+    let [chat_area, mut input_area] =
+        Layout::vertical([Constraint::Percentage(100), Constraint::Min(10)]).areas(area);
 
     render_messages(frame, app, chat_area);
 
     if let Some(_chat_jid) = app.selected_chat_jid.clone() {
+        // let input_block = Block::default().title("Input").borders(Borders::ALL);
+        let input_block = app.input_border.clone().border_style(Style::default().fg(
+            if let SelectedWidget::Input = app.selected_widget {
+                ratatui::style::Color::Green
+            } else {
+                ratatui::style::Color::White
+            },
+        ));
+        frame.render_widget(&input_block, input_area);
+
+        input_area = input_block.inner(input_area);
+
+        if let Some(msg) = &app.quoting_message {
+            let [quote_area, input_areaa] =
+                Layout::vertical([Constraint::Length(1), Constraint::Percentage(100)])
+                    .areas(input_area);
+
+            input_area = input_areaa;
+
+            frame.render_widget(
+                Paragraph::new(format!("> {}", get_quoted_text(msg))).dark_gray(),
+                quote_area,
+            );
+        }
+
         frame.render_widget(&app.input_widget, input_area);
     }
 }
