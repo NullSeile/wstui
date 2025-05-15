@@ -77,6 +77,7 @@ pub enum SelectedWidget {
     ChatList,
     Input,
     MessageList,
+    MessageView,
 }
 
 pub struct App<'a> {
@@ -276,6 +277,13 @@ impl App<'_> {
             SelectedWidget::Input => {
                 self.input_on_event(&event);
             }
+            SelectedWidget::MessageView => {
+                if let Event::Key(key) = event {
+                    if key.kind == KeyEventKind::Press && key.code == KeyCode::Esc {
+                        self.selected_widget = SelectedWidget::MessageList;
+                    }
+                }
+            }
         }
 
         if let Event::Key(key) = event {
@@ -323,6 +331,7 @@ impl App<'_> {
                     wr::send_message(&c, text.as_str(), self.quoting_message.as_ref());
                     self.input_widget.select_all();
                     self.input_widget.delete_next_char();
+                    self.quoting_message = None;
                 }
                 return;
             }
@@ -407,6 +416,11 @@ impl App<'_> {
                                 self.quoting_message = Some(msg.clone());
                                 self.selected_widget = SelectedWidget::Input;
                             }
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if self.message_list_state.selected_message.is_some() {
+                            self.selected_widget = SelectedWidget::MessageView;
                         }
                     }
                     KeyCode::Esc => {
