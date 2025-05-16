@@ -10,17 +10,46 @@ use ratatui::{
 };
 use ratatui_image::{Resize, StatefulImage};
 use tui_logger::TuiLoggerWidget;
+use whatsrust as wr;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
-    if let Some(img_id) = &app.active_image {
-        if let Some(image) = app.image_cache.get_mut(img_id) {
-            frame.render_stateful_widget(
-                StatefulImage::default().resize(Resize::Scale(None)),
-                frame.area(),
-                image,
-            );
-            return;
+    if let SelectedWidget::MessageView = app.selected_widget {
+        let msg_id = app.message_list_state.selected_message.clone().unwrap();
+        let chat_id = app.selected_chat_jid.clone().unwrap();
+
+        let block = Block::default()
+            .title("Message")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(
+                if let SelectedWidget::MessageView = app.selected_widget {
+                    ratatui::style::Color::Green
+                } else {
+                    ratatui::style::Color::White
+                },
+            ));
+
+        let area = block.inner(frame.area());
+        frame.render_widget(block, frame.area());
+
+        if let Some(msg) = app.messages.get(&chat_id).and_then(|m| m.get(&msg_id)) {
+            match msg.message {
+                wr::MessageContent::Image(ref image) => {
+                    if let Some(image) = app.image_cache.get_mut(&image.path) {
+                        frame.render_stateful_widget(
+                            StatefulImage::default().resize(Resize::Scale(None)),
+                            area,
+                            image,
+                        );
+                    }
+                }
+                wr::MessageContent::Text(ref text) => {
+                    let paragraph = Paragraph::new(text.to_string());
+                    frame.render_widget(paragraph, area);
+                }
+            }
         }
+
+        return;
     }
 
     let [contacts_area, chat_area, logs_area] = Layout::horizontal([
@@ -50,11 +79,10 @@ fn render_contacts(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let mut list_state = ListState::default().with_selected(app.selected_chat_index);
 
-    let percent = app.history_sync_percent.lock().unwrap();
     let list = List::new(items)
         .block(
             Block::bordered()
-                .title(if let Some(p) = *percent {
+                .title(if let Some(p) = app.history_sync_percent {
                     format!("Contacts ({p}%)")
                 } else {
                     "Contacts".to_string()

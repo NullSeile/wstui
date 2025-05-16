@@ -1,4 +1,5 @@
-use std::sync::Mutex;
+use std::sync::mpsc;
+use std::thread;
 use std::{collections::HashMap, sync::Arc};
 
 pub mod db;
@@ -7,10 +8,9 @@ pub mod ui;
 pub mod vim;
 
 use db::DatabaseHandler;
-use log::{error, info};
+use log::info;
 use message_list::MessageListState;
-use ratatui::crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
-use ratatui::style::Style;
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::widgets::Block;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
@@ -31,8 +31,6 @@ pub fn get_contact_name(contact: &wr::Contact) -> Option<Arc<str>> {
         None
     }
 }
-
-// Each chat has a name (can be Some(str) or None, in which case take the jid)
 
 #[derive(Clone, Debug)]
 pub struct Chat {
@@ -71,6 +69,14 @@ pub type MetadataStorage = HashMap<wr::MessageId, Metadata>;
 pub enum AppEvent {
     StateSyncComplete,
     DownloadFile(wr::MessageId, wr::FileId),
+    HistoryPercent(u32),
+}
+
+pub enum AppInput {
+    Noop,
+    App(AppEvent),
+    Message(wr::Message),
+    Terminal(Event),
 }
 
 pub enum SelectedWidget {
@@ -81,7 +87,6 @@ pub enum SelectedWidget {
 }
 
 pub struct App<'a> {
-    // pub connection: Connection,
     pub db_handler: DatabaseHandler,
 
     pub messages: MessagesStorage,
@@ -90,16 +95,13 @@ pub struct App<'a> {
     pub selected_chat_jid: Option<wr::JID>,
     pub selected_chat_index: Option<usize>,
 
-    pub history_sync_percent: Arc<Mutex<Option<u32>>>,
-    pub message_queue: Arc<Mutex<Vec<wr::Message>>>,
-    pub event_queue: Arc<Mutex<Vec<AppEvent>>>,
+    pub history_sync_percent: Option<u32>,
 
     pub quoting_message: Option<wr::Message>,
     pub message_list_state: MessageListState,
     pub metadata: MetadataStorage,
     pub image_cache: HashMap<Arc<str>, StatefulProtocol>,
     pub picker: Picker,
-    pub active_image: Option<wr::MessageId>,
 
     pub selected_widget: SelectedWidget,
 
@@ -108,6 +110,9 @@ pub struct App<'a> {
     pub input_border: Block<'a>,
 
     pub should_quit: bool,
+
+    pub tx: mpsc::Sender<AppInput>,
+    pub rx: mpsc::Receiver<AppInput>,
 }
 
 impl Default for App<'_> {
@@ -121,6 +126,8 @@ impl Default for App<'_> {
         let mut picker = Picker::from_query_stdio().unwrap();
         // picker.set_protocol_type(ratatui_image::picker::ProtocolType::Halfblocks);
 
+        let (tx, rx) = mpsc::channel::<AppInput>();
+
         Self {
             db_handler: DatabaseHandler::new("whatsapp.db"),
             messages: MessagesStorage::new(),
@@ -130,50 +137,93 @@ impl Default for App<'_> {
             selected_chat_index: None,
             message_list_state: MessageListState::default(),
             metadata: MetadataStorage::new(),
-            history_sync_percent: Arc::new(Mutex::new(None)),
-            message_queue: Arc::new(Mutex::new(Vec::new())),
-            event_queue: Arc::new(Mutex::new(Vec::new())),
+            history_sync_percent: None,
             image_cache: HashMap::new(),
             quoting_message: None,
-            active_image: None,
             picker,
             selected_widget: SelectedWidget::ChatList,
             vim: Vim::new(vim::Mode::Insert),
             input_border: vim::Mode::Insert.block(),
             input_widget,
             should_quit: false,
+            tx,
+            rx,
         }
     }
 }
 
 impl App<'_> {
-    pub fn init(&mut self) {
-        self.db_handler.init();
+    pub fn run(&mut self, phone: Option<String>) {
+        self.db_init();
 
-        info!("Reading database");
-        for chat in self.db_handler.get_chats() {
-            self.chats.insert(chat.jid.clone(), chat);
-        }
+        let ws_database_path = "examplestore.db";
 
-        for message in self.db_handler.get_messages() {
-            self.add_message(message);
-        }
-        self.sort_chats();
-    }
-
-    pub fn tick(&mut self) {
         {
-            let events = {
-                let mut event_queue = self.event_queue.lock().unwrap();
-                let mut events = Vec::new();
-                while let Some(event) = event_queue.pop() {
-                    events.push(event);
-                }
-                events
-            };
+            let tx = self.tx.clone();
+            wr::set_log_handler(move |msg, level| {
+                let level = match level {
+                    0 => log::Level::Error,
+                    1 => log::Level::Warn,
+                    2 => log::Level::Info,
+                    3 => log::Level::Debug,
+                    _ => log::Level::Trace,
+                };
+                log::log!(level, "{msg}");
+                tx.send(AppInput::Noop).unwrap();
+            });
+        }
 
-            for event in events {
-                match event {
+        {
+            let tx = self.tx.clone();
+            wr::set_history_sync_handler(move |percent| {
+                tx.send(AppInput::App(AppEvent::HistoryPercent(percent)))
+                    .unwrap();
+            });
+        }
+        {
+            let tx = self.tx.clone();
+            wr::set_state_sync_complete_handler(move || {
+                tx.send(AppInput::App(AppEvent::StateSyncComplete)).unwrap();
+            });
+        }
+        {
+            let tx = self.tx.clone();
+            wr::set_message_handler(move |message| {
+                tx.send(AppInput::Message(message)).unwrap();
+            });
+        }
+
+        info!("Starting WhatsRust...");
+
+        wr::new_client(ws_database_path);
+
+        wr::connect(move |data| {
+            qr2term::print_qr(data).unwrap();
+            if let Some(phone) = phone.as_ref() {
+                let code = wr::pair_phone(phone);
+                println!("Pairing code: {}", code);
+            }
+        });
+
+        // fn C_AddEventHandlers();
+        let mut terminal = ratatui::init();
+
+        {
+            let tx = self.tx.clone();
+            thread::spawn(move || {
+                loop {
+                    if let Ok(event) = event::read() {
+                        tx.send(AppInput::Terminal(event)).unwrap();
+                    }
+                }
+            });
+        }
+
+        loop {
+            terminal.draw(|frame| ui::draw(frame, self)).unwrap();
+
+            match self.rx.recv() {
+                Ok(AppInput::App(event)) => match event {
                     AppEvent::StateSyncComplete => {
                         self.get_contacts();
                         self.sort_chats();
@@ -187,41 +237,55 @@ impl App<'_> {
                         self.metadata
                             .insert(message_id.clone(), Metadata::File(state));
                     }
+                    AppEvent::HistoryPercent(percent) => {
+                        self.history_sync_percent = Some(percent);
+                    }
+                },
+                Ok(AppInput::Message(msg)) => {
+                    info!("Handling message: {:?}", msg);
+                    self.db_handler.add_message(&msg);
+                    self.add_message(msg);
+
+                    self.sort_chats();
+                    if let Some(ref current_jid) = self.selected_chat_jid {
+                        self.selected_chat_index = self
+                            .sorted_chats
+                            .iter()
+                            .position(|chat| &chat.jid == current_jid);
+                    }
                 }
+                Ok(AppInput::Terminal(event)) => {
+                    self.on_event(event);
+                }
+                Ok(AppInput::Noop) => {}
+                Err(_) => {}
+            }
+
+            if self.should_quit {
+                break;
             }
         }
 
-        {
-            let messages = {
-                let mut message_queue = self.message_queue.lock().unwrap();
-                let mut messages = Vec::new();
-                while let Some(msg) = message_queue.pop() {
-                    messages.push(msg);
-                }
-                messages
-            };
-
-            if !messages.is_empty() {
-                info!("Handling {} new messages", messages.len());
-            }
-
-            for msg in messages {
-                info!("Handling message: {:?}", msg);
-                self.db_handler.add_message(&msg);
-                self.add_message(msg);
-
-                self.sort_chats();
-                if let Some(ref current_jid) = self.selected_chat_jid {
-                    self.selected_chat_index = self
-                        .sorted_chats
-                        .iter()
-                        .position(|chat| &chat.jid == current_jid);
-                }
-            }
-        }
+        ratatui::restore();
+        wr::disconnect();
     }
 
-    pub fn on_event(&mut self, event: Event) {
+    fn db_init(&mut self) {
+        self.db_handler.init();
+
+        info!("Reading database");
+        for chat in self.db_handler.get_chats() {
+            self.chats.insert(chat.jid.clone(), chat);
+        }
+
+        for message in self.db_handler.get_messages() {
+            self.add_message(message);
+        }
+        self.sort_chats();
+    }
+
+    fn on_event(&mut self, event: Event) {
+        // Handle widget transitions
         if let Event::Key(key) = event {
             if key.kind == KeyEventKind::Press {
                 if key.code == KeyCode::Char('q') && key.modifiers == KeyModifiers::CONTROL {
@@ -263,6 +327,14 @@ impl App<'_> {
                             return;
                         }
                     }
+                    SelectedWidget::MessageView => {
+                        if let Event::Key(key) = event {
+                            if key.kind == KeyEventKind::Press && key.code == KeyCode::Esc {
+                                self.selected_widget = SelectedWidget::MessageList;
+                                return;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -278,43 +350,7 @@ impl App<'_> {
                 self.input_on_event(&event);
             }
             SelectedWidget::MessageView => {
-                if let Event::Key(key) = event {
-                    if key.kind == KeyEventKind::Press && key.code == KeyCode::Esc {
-                        self.selected_widget = SelectedWidget::MessageList;
-                    }
-                }
-            }
-        }
-
-        if let Event::Key(key) = event {
-            if key.kind == KeyEventKind::Press {
-                match key.code {
-                    // KeyCode::Char('v') if key.modifiers == KeyModifiers::CONTROL => {
-                    //     // TODO: Make this not horrible
-                    //     if let (Some(chat_jid), Some(msg_id)) = (
-                    //         self.selected_chat_jid.clone(),
-                    //         &self.message_list_state.selected_message,
-                    //     ) {
-                    //         if let Some(msg) = self
-                    //             .messages
-                    //             .get(&chat_jid)
-                    //             .and_then(|msgs| msgs.get(msg_id))
-                    //         {
-                    //             if let wr::MessageContent::Image(image) = &msg.message {
-                    //                 if let Some(Metadata::File(FileMeta::Downloaded)) =
-                    //                     self.metadata.get(msg_id)
-                    //                 {
-                    //                     self.active_image = Some(image.path.clone());
-                    //                 }
-                    //             }
-                    //         }
-                    //     }
-                    // }
-                    KeyCode::Esc => {
-                        self.active_image = None;
-                    }
-                    _ => {}
-                }
+                // self.message_list_on_event(&event);
             }
         }
     }

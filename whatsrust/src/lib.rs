@@ -184,17 +184,15 @@ impl From<&CContact> for Contact {
     }
 }
 
-pub type LogFn = extern "C" fn(*const c_char, u8);
-
+type CLogCallback = extern "C" fn(*const c_char, u8, *mut c_void);
 type CQrCallback = extern "C" fn(*const c_char, *mut c_void);
 type CMessageCallback = extern "C" fn(*const CMessage, *mut c_void);
 type CEventCallback = extern "C" fn(*mut c_void);
 type CHistorySyncCallback = extern "C" fn(u32, *mut c_void);
 unsafe extern "C" {
     fn C_NewClient(db_path: *const c_char);
-    fn C_Connect(qr_cb: CQrCallback, data: *mut c_void) -> bool;
+    fn C_Connect(qr_cb: CQrCallback, data: *mut c_void);
     fn C_SendMessage(jid: CJID, message: *const c_char, quoted_message: *const CMessage);
-    fn C_AddEventHandlers();
     fn C_GetAllContacts() -> CContactsMapResult;
     fn C_GetJoinedGroups() -> CGetGroupInfoResult;
     fn C_Disconnect();
@@ -203,7 +201,7 @@ unsafe extern "C" {
 
     fn C_SetMessageHandler(message_cb: CMessageCallback, data: *mut c_void);
     fn C_SetHistorySyncHandler(history_sync_cb: CHistorySyncCallback, data: *mut c_void);
-    fn C_SetLogHandler(log_fn: LogFn);
+    fn C_SetLogHandler(log_fn: CLogCallback, data: *mut c_void);
     fn C_SetStateSyncCompleteHandler(event_cb: CEventCallback, data: *mut c_void);
 }
 
@@ -226,14 +224,6 @@ pub fn pair_phone(phone: &str) -> String {
         .to_string_lossy()
         .into_owned();
     result_str
-}
-
-pub fn add_event_handlers() {
-    unsafe { C_AddEventHandlers() }
-}
-
-pub fn set_log_handler(log_fn: LogFn) {
-    unsafe { C_SetLogHandler(log_fn) }
 }
 
 pub fn new_client(db_path: &str) {
@@ -322,19 +312,7 @@ impl CallbackTranslator<*const CMessage> for Message {
 setup_handler!(
     set_message_handler,
     C_SetMessageHandler,
-    *const CMessage => Message
-);
-
-impl CallbackTranslator<u32> for u32 {
-    unsafe fn to_rust(ptr: u32) -> u32 {
-        ptr
-    }
-}
-setup_handler!(set_history_sync_handler, C_SetHistorySyncHandler, u32 => u32);
-
-setup_handler!(
-    set_state_sync_complete_handler,
-    C_SetStateSyncCompleteHandler,
+    msg : *const CMessage => Message
 );
 
 impl CallbackTranslator<*const c_char> for String {
@@ -343,7 +321,33 @@ impl CallbackTranslator<*const c_char> for String {
         c_str.to_string_lossy().into_owned()
     }
 }
-setup_handler!(connect, C_Connect, *const c_char => String);
+
+impl CallbackTranslator<u8> for u8 {
+    unsafe fn to_rust(ptr: u8) -> u8 {
+        ptr
+    }
+}
+
+setup_handler!(
+    set_log_handler,
+    C_SetLogHandler,
+    msg: *const c_char => String,
+    level: u8 => u8
+);
+
+impl CallbackTranslator<u32> for u32 {
+    unsafe fn to_rust(ptr: u32) -> u32 {
+        ptr
+    }
+}
+setup_handler!(set_history_sync_handler, C_SetHistorySyncHandler, percent: u32 => u32);
+
+setup_handler!(
+    set_state_sync_complete_handler,
+    C_SetStateSyncCompleteHandler,
+);
+
+setup_handler!(connect, C_Connect, qr: *const c_char => String);
 
 pub fn disconnect() {
     unsafe { C_Disconnect() }

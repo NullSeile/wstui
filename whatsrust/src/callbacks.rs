@@ -10,9 +10,15 @@ pub trait CallbackTranslator<T> {
 
 macro_rules! setup_handler {
     ($fn_name:ident, $c_func:ident) => {
-        callback_v2!($fn_name, $c_func,);
+        setup_handler!($fn_name, $c_func,);
     };
-    ($fn_name:ident, $c_func:ident, $($c_type:ty => $rs_type:ty),*) => {
+    (
+        $fn_name:ident,
+        $c_func:ident,
+        $(
+            $param_name:ident : $c_type:ty => $rs_type:ty
+        ),* $(,)?
+    ) => {
         pub fn $fn_name<F>(callback: F)
         where
             F: FnMut($($rs_type),*) + 'static,
@@ -25,9 +31,7 @@ macro_rules! setup_handler {
 
             // Shim callback compatible with C
             extern "C" fn shim(
-                $(
-                    __param: $c_type,
-                )*
+                $( $param_name: $c_type, )*
                 user_data: *mut c_void
             ) {
                 unsafe {
@@ -37,8 +41,8 @@ macro_rules! setup_handler {
                     let mut guard = closure.lock().unwrap();
 
                     guard($(
-                        <$rs_type>::to_rust(__param),
-                    ),*);
+                        <$rs_type>::to_rust($param_name),
+                    )*);
 
                     // TODO: Make sure this works
                     let _ = Box::into_raw(callback_box);

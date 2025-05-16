@@ -1,10 +1,9 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Datelike, Local};
-use log::info;
 use ratatui::{
     Frame,
-    layout::{Constraint, Flex, Layout, Rect},
+    layout::{Constraint, Layout, Rect},
     style::{Style, Stylize},
     text::Line,
     widgets::{Block, Paragraph},
@@ -13,7 +12,7 @@ use ratatui_image::StatefulImage;
 use textwrap;
 use whatsrust as wr;
 
-use crate::{App, AppEvent, FileMeta, Metadata, SelectedWidget};
+use crate::{App, AppEvent, AppInput, FileMeta, Metadata, SelectedWidget};
 
 fn message_height(message: &wr::Message, width: usize, app: &mut App) -> usize {
     let header_height = if message.info.quote_id.is_some() {
@@ -145,10 +144,16 @@ fn render_message(
                 None => {
                     frame
                         .render_widget(Paragraph::new(format!("🔗 {} +", data.path)), content_area);
-                    app.event_queue.lock().unwrap().push(AppEvent::DownloadFile(
-                        message.info.id.clone(),
-                        data.file_id.clone(),
-                    ));
+                    app.tx
+                        .send(AppInput::App(AppEvent::DownloadFile(
+                            message.info.id.clone(),
+                            data.file_id.clone(),
+                        )))
+                        .unwrap();
+                    // app.event_queue.lock().unwrap().push(AppEvent::DownloadFile(
+                    //     message.info.id.clone(),
+                    //     data.file_id.clone(),
+                    // ));
                 }
                 Some(Metadata::File(meta)) => match meta {
                     FileMeta::Failed => {
@@ -275,7 +280,7 @@ pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<(
 
         let is_selected = app.message_list_state.selected == Some(i);
         if is_selected {
-            info!("Selected message: {:?}", item);
+            // info!("Selected message: {:?}", item);
             app.message_list_state.selected_message = Some(item.info.id.clone())
         };
 

@@ -90,9 +90,13 @@ static void callHistorySync(HistorySyncHandler hdl, uint32_t percent) {
 	hdl.callback(percent, hdl.user_data);
 }
 
-typedef void (*LogHandler)(const char*, uint8_t);
-static void callLogInfo(LogHandler cb, const char* msg, uint8_t level) {
-	cb(msg, level);
+typedef void (*LogHandlerCallback)(const char*, uint8_t, void*);
+typedef struct {
+	LogHandlerCallback callback;
+	void* user_data;
+} LogHandler;
+static void callLogInfo(LogHandler hdl, const char* msg, uint8_t level) {
+	hdl.callback(msg, level, hdl.user_data);
 }
 */
 import "C"
@@ -126,11 +130,11 @@ var StateSyncCompleteHandler C.StateSyncCompleteHandler
 var historySyncHandler C.HistorySyncHandler
 
 func LOG_LEVEL(level int, msg string, args ...any) {
-	if logHandler != nil {
-		cmsg := C.CString(fmt.Sprintf(msg, args...))
-		defer C.free(unsafe.Pointer(cmsg))
-		C.callLogInfo(logHandler, cmsg, C.uint8_t(level))
-	}
+	// if logHandler != nil {
+	cmsg := C.CString(fmt.Sprintf(msg, args...))
+	defer C.free(unsafe.Pointer(cmsg))
+	C.callLogInfo(logHandler, cmsg, C.uint8_t(level))
+	// }
 }
 
 func LOG_ERROR(msg string, args ...any) {
@@ -443,8 +447,7 @@ func C_DownloadFile(fileId *C.char) C.uint8_t {
 	return C.uint8_t(status)
 }
 
-//export C_AddEventHandlers
-func C_AddEventHandlers() {
+func AddEventHandlers() {
 	client.AddEventHandler(func(rawEvt any) {
 		switch evt := rawEvt.(type) {
 		case *events.AppStateSyncComplete:
@@ -501,7 +504,7 @@ func C_AddEventHandlers() {
 }
 
 //export C_Connect
-func C_Connect(handler C.QrCallback, data unsafe.Pointer) bool {
+func C_Connect(handler C.QrCallback, data unsafe.Pointer) {
 	if client.Store.ID == nil {
 		qrChan, _ = client.GetQRChannel(context.Background())
 		err := client.Connect()
@@ -516,14 +519,14 @@ func C_Connect(handler C.QrCallback, data unsafe.Pointer) bool {
 				C.callQrCallback(handler, code, data)
 			}
 		}
-		return false
 	} else {
 		err := client.Connect()
 		if err != nil {
 			panic(err)
 		}
-		return true
 	}
+
+	AddEventHandlers()
 }
 
 //export C_PairPhone
