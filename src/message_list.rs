@@ -1,12 +1,14 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Datelike, Local};
+use log::info;
 use ratatui::{
     Frame,
+    buffer::Buffer,
     layout::{Constraint, Layout, Rect},
     style::{Style, Stylize},
     text::Line,
-    widgets::{Block, Paragraph},
+    widgets::{Block, Paragraph, StatefulWidget, Widget},
 };
 use ratatui_image::StatefulImage;
 use textwrap;
@@ -45,16 +47,23 @@ fn message_height(message: &wr::Message, width: usize, app: &mut App) -> usize {
         }
     };
 
-    header_height + content_height + 1
+    header_height + content_height
 }
 
 fn render_message(
-    frame: &mut Frame,
+    buf: &mut Buffer,
     message: &wr::Message,
     is_selected: bool,
     app: &mut App,
     area: Rect,
 ) {
+    if is_selected {
+        let style = Style::default()
+            .bg(ratatui::style::Color::Gray)
+            .fg(ratatui::style::Color::Black);
+        buf.set_style(area, style);
+    }
+
     let timestamp = {
         let local_time: DateTime<Local> = DateTime::from_timestamp(message.info.timestamp, 0)
             .unwrap()
@@ -106,17 +115,17 @@ fn render_message(
         }
     });
 
-    let [_padding, sender_area, quoted_area, content_area] = Layout::vertical([
-        Constraint::Length(1),
+    let [sender_area, quoted_area, content_area] = Layout::vertical([
+        // Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(if quote_widget.is_some() { 1 } else { 0 }),
         Constraint::Min(1),
     ])
     .areas(area);
 
-    frame.render_widget(sender_widget, sender_area);
+    sender_widget.render(sender_area, buf);
     if let Some(quoted_widget) = quote_widget {
-        frame.render_widget(quoted_widget, quoted_area);
+        quoted_widget.render(quoted_area, buf);
     }
 
     match &message.message {
@@ -125,7 +134,7 @@ fn render_message(
                 .iter()
                 .map(|line| Line::raw(line.to_string()))
                 .collect::<Vec<_>>();
-            frame.render_widget(Paragraph::new(lines), content_area);
+            Paragraph::new(lines).render(content_area, buf);
         }
         wr::MessageContent::Image(data) => {
             let content_height = match app.metadata.get(&message.info.id) {
@@ -142,25 +151,17 @@ fn render_message(
 
             match app.metadata.get(&message.info.id) {
                 None => {
-                    frame
-                        .render_widget(Paragraph::new(format!("🔗 {} +", data.path)), content_area);
+                    Paragraph::new(format!("🔗 {} +", data.path)).render(content_area, buf);
                     app.tx
                         .send(AppInput::App(AppEvent::DownloadFile(
                             message.info.id.clone(),
                             data.file_id.clone(),
                         )))
                         .unwrap();
-                    // app.event_queue.lock().unwrap().push(AppEvent::DownloadFile(
-                    //     message.info.id.clone(),
-                    //     data.file_id.clone(),
-                    // ));
                 }
                 Some(Metadata::File(meta)) => match meta {
                     FileMeta::Failed => {
-                        frame.render_widget(
-                            Paragraph::new("🔗 Failed to download image"),
-                            content_area,
-                        );
+                        Paragraph::new("🔗 Failed to download image").render(content_area, buf);
                     }
                     FileMeta::Downloaded => {
                         let image = app.image_cache.entry(data.path.clone()).or_insert_with(|| {
@@ -174,7 +175,7 @@ fn render_message(
 
                             app.picker.new_resize_protocol(image_src)
                         });
-                        frame.render_stateful_widget(StatefulImage::default(), img_area, image);
+                        StatefulImage::default().render(img_area, buf, image);
                     }
                 },
             };
@@ -184,10 +185,103 @@ fn render_message(
                     .iter()
                     .map(|line| Line::raw(line.to_string()))
                     .collect::<Vec<_>>();
-                frame.render_widget(Paragraph::new(lines), caption_area);
+                Paragraph::new(lines).render(caption_area, buf);
             }
         }
     };
+}
+
+pub fn render_messages_v2(frame: &mut Frame, app: &mut App, area: Rect) -> Option<()> {
+    let chat_jid = app.selected_chat_jid.as_ref()?;
+
+    let contact = app.chats.get(chat_jid).unwrap();
+    let block = Block::bordered()
+        .title(format!("Chat with {}", contact.get_name()))
+        .border_style(Style::default().fg(
+            if let SelectedWidget::MessageList = app.selected_widget {
+                ratatui::style::Color::Green
+            } else {
+                ratatui::style::Color::White
+            },
+        ));
+    frame.render_widget(&block, area);
+
+    let list_area = block.inner(area);
+    if list_area.is_empty() {
+        return Some(());
+    }
+
+    let chat_messages = app.messages.get(chat_jid)?;
+
+    let mut items = chat_messages.values().cloned().collect::<Vec<_>>();
+    items.sort_by(|a, b| b.info.timestamp.cmp(&a.info.timestamp));
+
+    if items.is_empty() {
+        app.message_list_state.select(None);
+        return Some(());
+    }
+
+    let width = list_area.width as isize;
+    let padding = 4;
+    let gap = 1;
+
+    if let Some(selected) = app.message_list_state.selected {
+        app.message_list_state.selected_message = Some(items[selected].info.id.clone());
+
+        let acc_height = items
+            .iter()
+            .take(selected)
+            .map(|item| message_height(item, width as usize, app))
+            .sum::<usize>()
+            + gap * selected;
+
+        let selected_height = message_height(&items[selected], width as usize, app);
+
+        let low = acc_height < app.message_list_state.offset + padding;
+        let high = acc_height + selected_height
+            > app.message_list_state.offset + list_area.height as usize - padding;
+
+        if low && high {
+            info!("idk");
+        } else if low {
+            app.message_list_state.offset = acc_height.saturating_sub(padding);
+        } else if high {
+            app.message_list_state.offset =
+                acc_height.saturating_sub(list_area.height as usize) + selected_height + padding;
+        }
+    } else {
+        app.message_list_state.selected_message = None;
+    }
+
+    info!("Rendering: ");
+    let mut y = list_area.bottom() as isize + app.message_list_state.offset as isize;
+    for (i, item) in items.iter().enumerate() {
+        let height = message_height(item, width as usize, app) as isize;
+
+        y -= height;
+
+        if y < list_area.top() as isize {
+            break;
+        }
+
+        if y + height <= list_area.bottom() as isize {
+            let item_area = Rect {
+                x: list_area.left(),
+                y: y as u16,
+                width: width as u16,
+                height: height as u16,
+            };
+
+            let is_selected = app.message_list_state.selected == Some(i);
+
+            render_message(frame.buffer_mut(), item, is_selected, app, item_area);
+            info!("{i} rendered");
+        }
+
+        y -= gap as isize;
+    }
+
+    None
 }
 
 pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<()> {
@@ -272,6 +366,8 @@ pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<(
             height: item_height as u16,
         };
 
+        // info!("{:?}", row_area);
+
         // if app.message_list_state.selected == Some(i)
         //     && app.message_list_state.selected_message == Some(item.info.id.clone())
         // {
@@ -293,18 +389,38 @@ pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<(
         //     })
         //     .split(row_area)[0];
 
-        if is_selected {
-            let style = Style::default()
-                .bg(ratatui::style::Color::Gray)
-                .fg(ratatui::style::Color::Black);
-            let mut message_area = item_area;
-            message_area.y += 1;
-            message_area.height -= 1;
-            frame.buffer_mut().set_style(message_area, style);
-        }
+        render_message(frame.buffer_mut(), item, is_selected, app, item_area);
 
-        render_message(frame, item, is_selected, app, item_area);
+        // current_height += 1;
     }
+
+    // Render the last item partially
+    if let Some(last_item) = items.get(last_visible_index) {
+        // info!("{:?}", last_item);
+
+        let (x, y) = {
+            // current_height += message_height(last_item, list_width, app) as u16;
+            (
+                list_area.left(),
+                list_area.top(),
+                // list_area.bottom().saturating_sub(current_height),
+                // (list_area.bottom() - current_height).min(list_area.top()),
+            )
+        };
+
+        let height = list_area.top() + (list_area.bottom() - current_height);
+        let row_area = Rect {
+            x,
+            y,
+            width: list_area.width,
+            height,
+        };
+        info!("x: {x}, y: {y}");
+        // info!("height: {height}");
+        info!("row_area: {:?}", row_area);
+        // render_message(frame, last_item, true, app, row_area);
+    }
+
     None
 }
 

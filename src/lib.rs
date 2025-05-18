@@ -124,7 +124,7 @@ impl Default for App<'_> {
         input_widget.set_placeholder_text("Type a message...");
 
         let mut picker = Picker::from_query_stdio().unwrap();
-        // picker.set_protocol_type(ratatui_image::picker::ProtocolType::Halfblocks);
+        picker.set_protocol_type(ratatui_image::picker::ProtocolType::Halfblocks);
 
         let (tx, rx) = mpsc::channel::<AppInput>();
 
@@ -429,6 +429,14 @@ impl App<'_> {
         if let Event::Key(key) = event {
             if key.kind == KeyEventKind::Press {
                 match key.code {
+                    KeyCode::Char('J') => {
+                        self.message_list_state.offset =
+                            self.message_list_state.offset.saturating_sub(1);
+                    }
+                    KeyCode::Char('K') => {
+                        self.message_list_state.offset =
+                            self.message_list_state.offset.saturating_add(1);
+                    }
                     KeyCode::Char('j') => {
                         self.message_list_state.select_previous();
                     }
