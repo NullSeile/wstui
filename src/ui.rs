@@ -1,6 +1,6 @@
 use crate::{
     App, SelectedWidget,
-    message_list::{get_quoted_text, render_messages, render_messages_v2},
+    message_list::{get_quoted_text, render_messages},
 };
 use ratatui::{
     Frame,
@@ -103,7 +103,7 @@ pub fn render_chats(frame: &mut Frame, app: &mut App, area: Rect) {
     let [chat_area, mut input_area] =
         Layout::vertical([Constraint::Percentage(100), Constraint::Min(10)]).areas(area);
 
-    render_messages_v2(frame, app, chat_area);
+    render_messages(frame, app, chat_area);
 
     if let Some(_chat_jid) = app.selected_chat_jid.clone() {
         // let input_block = Block::default().title("Input").borders(Borders::ALL);

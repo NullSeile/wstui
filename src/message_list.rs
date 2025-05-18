@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::{
+    cmp::{max, min},
+    sync::Arc,
+};
 
 use chrono::{DateTime, Datelike, Local};
 use log::info;
@@ -191,7 +194,7 @@ fn render_message(
     };
 }
 
-pub fn render_messages_v2(frame: &mut Frame, app: &mut App, area: Rect) -> Option<()> {
+pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<()> {
     let chat_jid = app.selected_chat_jid.as_ref()?;
 
     let contact = app.chats.get(chat_jid).unwrap();
@@ -225,9 +228,16 @@ pub fn render_messages_v2(frame: &mut Frame, app: &mut App, area: Rect) -> Optio
     let padding = 4;
     let gap = 1;
 
-    if let Some(selected) = app.message_list_state.selected {
-        app.message_list_state.selected_message = Some(items[selected].info.id.clone());
+    app.message_list_state.selected_message = app
+        .message_list_state
+        .selected
+        .map(|selected| items[selected].info.id.clone());
 
+    if app.message_list_state.selected.is_some() && app.message_list_state.update_selected {
+        let selected = app.message_list_state.selected.unwrap();
+        app.message_list_state.update_selected = false;
+
+        // Height to the bottom of selected msg
         let acc_height = items
             .iter()
             .take(selected)
@@ -241,328 +251,76 @@ pub fn render_messages_v2(frame: &mut Frame, app: &mut App, area: Rect) -> Optio
         let high = acc_height + selected_height
             > app.message_list_state.offset + list_area.height as usize - padding;
 
-        if low && high {
-            info!("idk");
-        } else if low {
+        // if low && high {
+        //     info!("idk");
+        // } else if low {
+        if low {
             app.message_list_state.offset = acc_height.saturating_sub(padding);
         } else if high {
             app.message_list_state.offset =
-                acc_height.saturating_sub(list_area.height as usize) + selected_height + padding;
+                (acc_height + selected_height + padding).saturating_sub(list_area.height as usize);
         }
-    } else {
-        app.message_list_state.selected_message = None;
     }
 
-    info!("Rendering: ");
     let mut y = list_area.bottom() as isize + app.message_list_state.offset as isize;
     for (i, item) in items.iter().enumerate() {
         let height = message_height(item, width as usize, app) as isize;
 
-        y -= height;
+        let bottom = y;
+        let top = y - height;
 
-        if y < list_area.top() as isize {
+        if bottom < list_area.top() as isize {
             break;
         }
 
-        if y + height <= list_area.bottom() as isize {
-            let item_area = Rect {
-                x: list_area.left(),
-                y: y as u16,
-                width: width as u16,
-                height: height as u16,
-            };
-
+        if top <= list_area.bottom() as isize {
             let is_selected = app.message_list_state.selected == Some(i);
 
-            render_message(frame.buffer_mut(), item, is_selected, app, item_area);
-            info!("{i} rendered");
-        }
+            let too_low = top < list_area.top() as isize;
+            let too_high = bottom > list_area.bottom() as isize;
 
-        y -= gap as isize;
-    }
+            if too_low || too_high {
+                let item_area = Rect::new(0, 0, width as u16, height as u16);
+                let mut buf = Buffer::empty(item_area);
+                render_message(&mut buf, item, is_selected, app, item_area);
 
-    None
-}
+                let available_top = max(top, list_area.top() as isize) as u16;
+                let available_bottom = min(bottom, list_area.bottom() as isize) as u16;
 
-pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<()> {
-    let chat_jid = app.selected_chat_jid.as_ref()?;
+                let buf_area = Rect::new(
+                    list_area.left(),
+                    available_top,
+                    width as u16,
+                    available_bottom - available_top,
+                );
 
-    let contact = app.chats.get(chat_jid).unwrap();
-    let block = Block::bordered()
-        .title(format!("Chat with {}", contact.get_name()))
-        .border_style(Style::default().fg(
-            if let SelectedWidget::MessageList = app.selected_widget {
-                ratatui::style::Color::Green
+                if !buf_area.is_empty() {
+                    let mut mapped_area = buf_area;
+                    mapped_area.y = (mapped_area.y as isize - top) as u16;
+                    mapped_area.x = 0;
+
+                    for (screen_row, msg_row) in buf_area.rows().zip(mapped_area.rows()) {
+                        for (screen_col, msg_col) in screen_row.columns().zip(msg_row.columns()) {
+                            frame.buffer_mut()[screen_col] = buf[msg_col].clone();
+                        }
+                    }
+                }
             } else {
-                ratatui::style::Color::White
-            },
-        ));
-    frame.render_widget(&block, area);
+                let item_area = Rect {
+                    x: list_area.left(),
+                    y: top as u16,
+                    width: width as u16,
+                    height: height as u16,
+                };
 
-    let list_area = block.inner(area);
-    if list_area.is_empty() {
-        return Some(());
-    }
+                render_message(frame.buffer_mut(), item, is_selected, app, item_area);
+            }
+        }
 
-    let chat_messages = app.messages.get(chat_jid)?;
-
-    let mut items = chat_messages.values().cloned().collect::<Vec<_>>();
-    items.sort_by(|a, b| b.info.timestamp.cmp(&a.info.timestamp));
-
-    if items.is_empty() {
-        app.message_list_state.select(None);
-        return Some(());
-    }
-
-    // If the selected index is out of bounds, set it to the last item
-    if app
-        .message_list_state
-        .selected
-        .is_some_and(|s| s >= items.len())
-    {
-        app.message_list_state
-            .select(Some(items.len().saturating_sub(1)));
-    }
-
-    let list_height = list_area.height as usize;
-    let list_width = list_area.width as usize;
-
-    let (first_visible_index, last_visible_index) = get_items_bounds(
-        app.message_list_state.selected,
-        app.message_list_state.offset,
-        list_height,
-        list_width,
-        app,
-        &items,
-    );
-
-    // Important: this changes the state's offset to be the beginning of the now viewable items
-    app.message_list_state.offset = first_visible_index;
-
-    let mut current_height = 0;
-
-    for (i, item) in items
-        .iter()
-        .enumerate()
-        .skip(app.message_list_state.offset)
-        .take(last_visible_index - first_visible_index)
-    {
-        let item_height = message_height(item, list_width, app);
-
-        let (x, y) = {
-            current_height += item_height as u16;
-            (
-                list_area.left(),
-                // list_area.bottom().saturating_sub(current_height),
-                list_area.bottom() - current_height,
-            )
-        };
-
-        let row_area = Rect {
-            x,
-            y,
-            width: list_area.width,
-            // height: (item_height as u16).min(y),
-            height: item_height as u16,
-        };
-
-        // info!("{:?}", row_area);
-
-        // if app.message_list_state.selected == Some(i)
-        //     && app.message_list_state.selected_message == Some(item.info.id.clone())
-        // {
-        //     app.message_list_state.offset = i;
-        // }
-
-        let is_selected = app.message_list_state.selected == Some(i);
-        if is_selected {
-            // info!("Selected message: {:?}", item);
-            app.message_list_state.selected_message = Some(item.info.id.clone())
-        };
-
-        let item_area = row_area;
-        // let item_area = Layout::horizontal([Constraint::Ratio(2, 3)])
-        //     .flex(if item.info.is_from_me {
-        //         Flex::End
-        //     } else {
-        //         Flex::Start
-        //     })
-        //     .split(row_area)[0];
-
-        render_message(frame.buffer_mut(), item, is_selected, app, item_area);
-
-        // current_height += 1;
-    }
-
-    // Render the last item partially
-    if let Some(last_item) = items.get(last_visible_index) {
-        // info!("{:?}", last_item);
-
-        let (x, y) = {
-            // current_height += message_height(last_item, list_width, app) as u16;
-            (
-                list_area.left(),
-                list_area.top(),
-                // list_area.bottom().saturating_sub(current_height),
-                // (list_area.bottom() - current_height).min(list_area.top()),
-            )
-        };
-
-        let height = list_area.top() + (list_area.bottom() - current_height);
-        let row_area = Rect {
-            x,
-            y,
-            width: list_area.width,
-            height,
-        };
-        info!("x: {x}, y: {y}");
-        // info!("height: {height}");
-        info!("row_area: {:?}", row_area);
-        // render_message(frame, last_item, true, app, row_area);
+        y -= height + gap as isize;
     }
 
     None
-}
-
-fn get_items_bounds(
-    selected: Option<usize>,
-    offset: usize,
-    max_height: usize,
-    list_width: usize,
-    app: &mut App,
-    items: &[wr::Message],
-) -> (usize, usize) {
-    let offset = offset.min(items.len().saturating_sub(1));
-
-    // Note: visible here implies visible in the given area
-    let mut first_visible_index = offset;
-    let mut last_visible_index = offset;
-
-    // Current height of all items in the list to render, beginning at the offset
-    let mut height_from_offset = 0;
-
-    // Calculate the last visible index and total height of the items
-    // that will fit in the available space
-    for item in items.iter().skip(offset) {
-        let item_height = message_height(item, list_width, app);
-        if height_from_offset + item_height > max_height {
-            // if height_from_offset > max_height {
-            break;
-        }
-
-        height_from_offset += item_height;
-        last_visible_index += 1;
-    }
-
-    // Get the selected index and apply scroll_padding to it, but still honor the offset if
-    // nothing is selected. This allows for the list to stay at a position after select()ing
-    // None.
-    let index_to_display = apply_scroll_padding_to_selected_index(
-        selected,
-        max_height,
-        list_width,
-        first_visible_index,
-        last_visible_index,
-        app,
-        items,
-    )
-    .unwrap_or(offset);
-
-    // Recall that last_visible_index is the index of what we
-    // can render up to in the given space after the offset
-    // If we have an item selected that is out of the viewable area (or
-    // the offset is still set), we still need to show this item
-    while index_to_display >= last_visible_index {
-        height_from_offset = height_from_offset.saturating_add(message_height(
-            &items[last_visible_index],
-            list_width,
-            app,
-        ));
-
-        last_visible_index += 1;
-
-        // Now we need to hide previous items since we didn't have space
-        // for the selected/offset item
-        while height_from_offset > max_height {
-            height_from_offset = height_from_offset.saturating_sub(message_height(
-                &items[first_visible_index],
-                list_width,
-                app,
-            ));
-
-            // Remove this item to view by starting at the next item index
-            first_visible_index += 1;
-        }
-    }
-
-    // Here we're doing something similar to what we just did above
-    // If the selected item index is not in the viewable area, let's try to show the item
-    while index_to_display < first_visible_index {
-        first_visible_index -= 1;
-
-        height_from_offset = height_from_offset.saturating_add(message_height(
-            &items[first_visible_index],
-            list_width,
-            app,
-        ));
-
-        // Don't show an item if it is beyond our viewable height
-        while height_from_offset > max_height {
-            last_visible_index -= 1;
-
-            height_from_offset = height_from_offset.saturating_sub(message_height(
-                &items[last_visible_index],
-                list_width,
-                app,
-            ));
-        }
-    }
-
-    (first_visible_index, last_visible_index)
-}
-
-fn apply_scroll_padding_to_selected_index(
-    selected: Option<usize>,
-    max_height: usize,
-    list_width: usize,
-    first_visible_index: usize,
-    last_visible_index: usize,
-    app: &mut App,
-    items: &[wr::Message],
-) -> Option<usize> {
-    let last_valid_index = items.len().saturating_sub(1);
-    let selected = selected?.min(last_valid_index);
-
-    // The bellow loop handles situations where the list item sizes may not be consistent,
-    // where the offset would have excluded some items that we want to include, or could
-    // cause the offset value to be set to an inconsistent value each time we render.
-    // The padding value will be reduced in case any of these issues would occur
-    let mut scroll_padding = 1;
-    while scroll_padding > 0 {
-        let mut height_around_selected = 0;
-        for index in selected.saturating_sub(scroll_padding)
-            ..=selected
-                .saturating_add(scroll_padding)
-                .min(last_valid_index)
-        {
-            height_around_selected += message_height(&items[index], list_width, app);
-        }
-        if height_around_selected <= max_height {
-            break;
-        }
-        scroll_padding -= 1;
-    }
-
-    Some(
-        if (selected + scroll_padding).min(last_valid_index) >= last_visible_index {
-            selected + scroll_padding
-        } else if selected.saturating_sub(scroll_padding) < first_visible_index {
-            selected.saturating_sub(scroll_padding)
-        } else {
-            selected
-        }
-        .min(last_valid_index),
-    )
 }
 
 #[derive(Debug, Default, Clone, Eq, PartialEq, Hash)]
@@ -570,6 +328,7 @@ pub struct MessageListState {
     pub selected: Option<usize>,
     pub offset: usize,
     pub selected_message: Option<wr::MessageId>,
+    pub update_selected: bool,
 }
 
 impl MessageListState {
@@ -583,12 +342,15 @@ impl MessageListState {
         self.selected = None;
         self.offset = 0;
         self.selected_message = None;
+        self.update_selected = false;
     }
 
     pub fn select(&mut self, index: Option<usize>) {
         self.selected = index;
         if index.is_none() {
             self.offset = 0;
+        } else {
+            self.update_selected = true;
         }
     }
     pub fn select_next(&mut self) {
