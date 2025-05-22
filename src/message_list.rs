@@ -15,9 +15,25 @@ use ratatui::{
 };
 use ratatui_image::StatefulImage;
 use textwrap;
-use whatsrust as wr;
+use whatsrust::{self as wr, FileKind};
 
 use crate::{App, AppEvent, AppInput, FileMeta, Metadata, SelectedWidget};
+
+fn file_content_height(id: &wr::MessageId, file: &wr::FileContent, app: &mut App) -> usize {
+    match file.kind {
+        FileKind::Image | FileKind::Sticker => match app.metadata.get(id) {
+            None => 1,
+            Some(Metadata::File(meta)) => match meta {
+                FileMeta::DownloadFailed | FileMeta::LoadFailed => 1,
+                FileMeta::Downloaded => 12,
+            },
+        },
+        // FileKind::Sticker => 1,
+        FileKind::Video => 1,
+        FileKind::Audio => 1,
+        FileKind::Document => 1,
+    }
+}
 
 fn message_height(message: &wr::Message, width: usize, app: &mut App) -> usize {
     let header_height = if message.info.quote_id.is_some() {
@@ -31,21 +47,14 @@ fn message_height(message: &wr::Message, width: usize, app: &mut App) -> usize {
             let lines = textwrap::wrap(text, width);
             lines.len()
         }
-        wr::MessageContent::Image(data) => {
+        wr::MessageContent::File(data) => {
             let lines = if let Some(caption) = &data.caption {
                 textwrap::wrap(caption, width).len()
             } else {
                 0
             };
 
-            let content_height = match app.metadata.get(&message.info.id) {
-                None => 1,
-                Some(Metadata::File(meta)) => match meta {
-                    FileMeta::Failed => 1,
-                    FileMeta::Downloaded => 12,
-                },
-            };
-
+            let content_height = file_content_height(&message.info.id, data, app);
             content_height + lines
         }
     };
@@ -119,7 +128,6 @@ fn render_message(
     });
 
     let [sender_area, quoted_area, content_area] = Layout::vertical([
-        // Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(if quote_widget.is_some() { 1 } else { 0 }),
         Constraint::Min(1),
@@ -139,22 +147,18 @@ fn render_message(
                 .collect::<Vec<_>>();
             Paragraph::new(lines).render(content_area, buf);
         }
-        wr::MessageContent::Image(data) => {
-            let content_height = match app.metadata.get(&message.info.id) {
-                None => 1,
-                Some(Metadata::File(meta)) => match meta {
-                    FileMeta::Failed => 1,
-                    FileMeta::Downloaded => 12,
-                },
-            };
+        wr::MessageContent::File(data) => {
+            let content_height = file_content_height(&message.info.id, data, app);
 
-            let [img_area, caption_area] =
-                Layout::vertical([Constraint::Length(content_height), Constraint::Min(0)])
-                    .areas(content_area);
+            let [media_area, caption_area] = Layout::vertical([
+                Constraint::Length(content_height as u16),
+                Constraint::Min(0),
+            ])
+            .areas(content_area);
 
             match app.metadata.get(&message.info.id) {
                 None => {
-                    Paragraph::new(format!("🔗 {} +", data.path)).render(content_area, buf);
+                    Paragraph::new(format!("🔗 {} +", data.path)).render(media_area, buf);
                     app.tx
                         .send(AppInput::App(AppEvent::DownloadFile(
                             message.info.id.clone(),
@@ -163,23 +167,72 @@ fn render_message(
                         .unwrap();
                 }
                 Some(Metadata::File(meta)) => match meta {
-                    FileMeta::Failed => {
-                        Paragraph::new("🔗 Failed to download image").render(content_area, buf);
+                    FileMeta::DownloadFailed => {
+                        Paragraph::new(format!("🔗 Failed to download {}", data.path))
+                            .render(media_area, buf);
                     }
-                    FileMeta::Downloaded => {
-                        let image = app.image_cache.entry(data.path.clone()).or_insert_with(|| {
-                            let binding = data.path.to_string();
-                            let image_path = std::path::Path::new(&binding);
-
-                            let image_src = image::ImageReader::open(image_path)
-                                .unwrap()
-                                .decode()
-                                .unwrap();
-
-                            app.picker.new_resize_protocol(image_src)
-                        });
-                        StatefulImage::default().render(img_area, buf, image);
+                    FileMeta::LoadFailed => {
+                        Paragraph::new(format!("🔗 Failed to load {}", data.path))
+                            .render(media_area, buf);
                     }
+                    FileMeta::Downloaded => match data.kind {
+                        FileKind::Image | FileKind::Sticker => {
+                            if let Some(image) = app.image_cache.get_mut(&data.path) {
+                                StatefulImage::default().render(media_area, buf, image);
+                            } else {
+                                let binding = data.path.to_string();
+                                let image_path = std::path::Path::new(&binding);
+
+                                let image_res =
+                                    image::ImageReader::open(app.media_path.join(image_path))
+                                        .unwrap()
+                                        .decode();
+
+                                if let Ok(image_src) = image_res {
+                                    let mut img = app.picker.new_resize_protocol(image_src);
+                                    StatefulImage::default().render(media_area, buf, &mut img);
+
+                                    app.image_cache.insert(data.path.clone(), img);
+                                } else {
+                                    app.tx
+                                        .send(AppInput::App(AppEvent::SetFileState(
+                                            message.info.id.clone(),
+                                            FileMeta::LoadFailed,
+                                        )))
+                                        .unwrap();
+                                }
+
+                                // app.image_cache.insert(data.path.clone());
+                            }
+
+                            // let image =
+                            //     app.image_cache.entry(data.path.clone()).or_insert_with(|| {
+                            //         let binding = data.path.to_string();
+                            //         let image_path = std::path::Path::new(&binding);
+                            //
+                            //         let image_src =
+                            //             image::ImageReader::open(app.media_path.join(image_path))
+                            //                 .unwrap()
+                            //                 .decode()
+                            //                 .unwrap();
+                            //
+                            //         app.picker.new_resize_protocol(image_src)
+                            //     });
+                            // StatefulImage::default().render(media_area, buf, image);
+                        }
+                        // FileKind::Sticker => {
+                        //     Paragraph::new(format!("🔗 {} ✓", data.path)).render(media_area, buf);
+                        // }
+                        FileKind::Video => {
+                            Paragraph::new(format!("🔗 {} ✓", data.path)).render(media_area, buf);
+                        }
+                        FileKind::Audio => {
+                            Paragraph::new(format!("🔗 {} ✓", data.path)).render(media_area, buf);
+                        }
+                        FileKind::Document => {
+                            Paragraph::new(format!("🔗 {} ✓", data.path)).render(media_area, buf);
+                        }
+                    },
                 },
             };
 
@@ -385,10 +438,8 @@ impl MessageListState {
 pub fn get_quoted_text(msg: &wr::Message) -> Arc<str> {
     match &msg.message {
         wr::MessageContent::Text(text) => text.clone(),
-        wr::MessageContent::Image(wr::ImageContent {
-            path,
-            file_id: _,
-            caption,
-        }) => format!("Image: {path} Caption: {caption:?}").into(),
+        wr::MessageContent::File(data) => {
+            format!("{}: {}", data.path, data.caption.as_deref().unwrap_or("")).into()
+        }
     }
 }

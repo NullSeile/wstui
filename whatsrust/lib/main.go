@@ -47,14 +47,15 @@ typedef struct {
 } TextMessage;
 
 typedef struct {
+	uint8_t kind;
 	char* path;
 	char* fileID;
 	char* caption;
-} ImageMessage;
+} FileMessage;
 
 typedef struct {
 	MessageInfo info;
-	int8_t messageType;
+	uint8_t messageType;
 	void* message;
 } Message;
 
@@ -130,11 +131,9 @@ var StateSyncCompleteHandler C.StateSyncCompleteHandler
 var historySyncHandler C.HistorySyncHandler
 
 func LOG_LEVEL(level int, msg string, args ...any) {
-	// if logHandler != nil {
 	cmsg := C.CString(fmt.Sprintf(msg, args...))
 	defer C.free(unsafe.Pointer(cmsg))
 	C.callLogInfo(logHandler, cmsg, C.uint8_t(level))
-	// }
 }
 
 func LOG_ERROR(msg string, args ...any) {
@@ -288,47 +287,71 @@ func ExtensionByType(mimeType string, defaultExt string) string {
 
 const (
 	MessageTypeText = iota
-	MessageTypeImage
+	MessageTypeFile
 )
 
-// C.Message to waE2E.Message
-func CMessageToWaE2EMessage(cmsg *C.Message) (types.MessageInfo, *waE2E.Message) {
-	info := types.MessageInfo{
+const (
+	FileTypeImage = iota
+	FileTypeVideo
+	FileTypeAudio
+	FileTypeDocument
+	FileTypeSticker
+)
+
+func CMessageInfoToGo(cinfo C.MessageInfo) types.MessageInfo {
+	return types.MessageInfo{
 		MessageSource: types.MessageSource{
-			Chat:     cToJid(cmsg.info.chat),
-			Sender:   cToJid(cmsg.info.sender),
-			IsFromMe: bool(cmsg.info.isFromMe),
+			Chat:     cToJid(cinfo.chat),
+			Sender:   cToJid(cinfo.sender),
+			IsFromMe: bool(cinfo.isFromMe),
 		},
-		ID:        C.GoString(cmsg.info.id),
-		Timestamp: time.Unix(int64(cmsg.info.timestamp), 0),
+		ID:        C.GoString(cinfo.id),
+		Timestamp: time.Unix(int64(cinfo.timestamp), 0),
 	}
+}
 
-	switch cmsg.messageType {
-	case C.int8_t(MessageTypeText):
-		textMsg := (*C.TextMessage)(cmsg.message)
-		text := C.GoString(textMsg.text)
-		LOG_INFO("Text: %v %s", textMsg.text, text)
-		msg := waE2E.Message{
-			Conversation: &text,
-		}
-		return info, &msg
-	case C.int8_t(MessageTypeImage):
-		imgMsg := (*C.ImageMessage)(cmsg.message)
-		// downloadInfo, err := FileIdToDownloadInfo(C.GoString(imgMsg.fileID))
-		// if err != nil {
-		// 	panic(err)
-		// }
+// Theoretically, this should be used for quoting messages, but sending nil as the message
+// and only setting the message info works.
+func CMessageToWaE2EMessage(cmsg *C.Message) (types.MessageInfo, *waE2E.Message) {
+	info := CMessageInfoToGo(cmsg.info)
+	return info, nil
 
-		caption := C.GoString(imgMsg.caption)
-		msg := waE2E.Message{
-			ImageMessage: &waE2E.ImageMessage{
-				Caption: &caption,
-			},
-		}
-		return info, &msg
-	default:
-		return info, nil
-	}
+	// switch cmsg.messageType {
+	// case C.int8_t(MessageTypeText):
+	// 	textMsg := (*C.TextMessage)(cmsg.message)
+	// 	text := C.GoString(textMsg.text)
+	// 	LOG_INFO("Text: %v %s", textMsg.text, text)
+	// 	msg := waE2E.Message{
+	// 		Conversation: &text,
+	// 	}
+	// 	return info, &msg
+	// case C.int8_t(MessageTypeImage):
+	// 	imgMsg := (*C.ImageMessage)(cmsg.message)
+	// 	// downloadInfo, err := FileIdToDownloadInfo(C.GoString(imgMsg.fileID))
+	// 	// if err != nil {
+	// 	// 	panic(err)
+	// 	// }
+	//
+	// 	caption := C.GoString(imgMsg.caption)
+	// 	msg := waE2E.Message{
+	// 		ImageMessage: &waE2E.ImageMessage{
+	// 			Caption: &caption,
+	// 		},
+	// 	}
+	// 	return info, &msg
+	// case C.int8_t(MessageTypeVideo):
+	// 	vidMsg := (*C.VideoMessage)(cmsg.message)
+	//
+	// 	caption := C.GoString(vidMsg.caption)
+	// 	msg := waE2E.Message{
+	// 		VideoMessage: &waE2E.VideoMessage{
+	// 			Caption: &caption,
+	// 		},
+	// 	}
+	// 	return info, &msg
+	// default:
+	// 	return info, nil
+	// }
 }
 
 func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
@@ -357,7 +380,7 @@ func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
 
 		message := C.Message{
 			info:        cinfo,
-			messageType: C.int8_t(MessageTypeText),
+			messageType: C.uint8_t(MessageTypeText),
 			message:     unsafe.Pointer(content),
 		}
 
@@ -385,12 +408,11 @@ func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
 
 		message := C.Message{
 			info:        cinfo,
-			messageType: C.int8_t(MessageTypeText),
+			messageType: C.uint8_t(MessageTypeText),
 			message:     unsafe.Pointer(content),
 		}
 		C.callMessageHandler(messageHandler, &message)
 	}
-
 	if msg.ImageMessage != nil {
 		img := msg.GetImageMessage()
 		if img == nil {
@@ -425,7 +447,8 @@ func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
 		}
 		defer C.free(unsafe.Pointer(ccaption))
 
-		content := (*C.ImageMessage)(C.malloc(C.sizeof_ImageMessage))
+		content := (*C.FileMessage)(C.malloc(C.sizeof_FileMessage))
+		content.kind = C.uint8_t(FileTypeImage)
 		content.path = cpath
 		content.fileID = cfileId
 		content.caption = ccaption
@@ -433,7 +456,175 @@ func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
 
 		message := C.Message{
 			info:        cinfo,
-			messageType: C.int8_t(MessageTypeImage),
+			messageType: C.uint8_t(MessageTypeFile),
+			message:     unsafe.Pointer(content),
+		}
+		C.callMessageHandler(messageHandler, &message)
+	}
+	if msg.VideoMessage != nil {
+		vid := msg.GetVideoMessage()
+		if vid == nil {
+			LOG_ERROR("VideoMessage is nil")
+			return
+		}
+
+		ext := ExtensionByType(vid.GetMimetype(), ".mp4")
+		caption := vid.GetCaption()
+
+		context_info := vid.GetContextInfo()
+		if context_info != nil {
+			id := context_info.GetStanzaID()
+			if id != "" {
+				cinfo.quoteID = C.CString(id)
+			}
+		}
+
+		filePath := fmt.Sprintf("videos/%s%s", info.ID, ext)
+		fileId := DownloadableMessageToFileId(client, vid, filePath)
+		cfileId := C.CString(fileId)
+		defer C.free(unsafe.Pointer(cfileId))
+
+		cpath := C.CString(filePath)
+		defer C.free(unsafe.Pointer(cpath))
+
+		ccaption := C.CString(caption)
+		if caption == "" {
+			ccaption = nil
+		}
+		defer C.free(unsafe.Pointer(ccaption))
+
+		content := (*C.FileMessage)(C.malloc(C.sizeof_FileMessage))
+		content.kind = C.uint8_t(FileTypeVideo)
+		content.path = cpath
+		content.fileID = cfileId
+		content.caption = ccaption
+		defer C.free(unsafe.Pointer(content))
+		message := C.Message{
+			info:        cinfo,
+			messageType: C.uint8_t(MessageTypeFile),
+			message:     unsafe.Pointer(content),
+		}
+		C.callMessageHandler(messageHandler, &message)
+	}
+	if msg.AudioMessage != nil {
+		audio := msg.GetAudioMessage()
+		if audio == nil {
+			LOG_ERROR("AudioMessage is nil")
+			return
+		}
+
+		ext := ExtensionByType(audio.GetMimetype(), ".ogg")
+
+		context_info := audio.GetContextInfo()
+		if context_info != nil {
+			id := context_info.GetStanzaID()
+			if id != "" {
+				cinfo.quoteID = C.CString(id)
+			}
+		}
+
+		filePath := fmt.Sprintf("audios/%s%s", info.ID, ext)
+		fileId := DownloadableMessageToFileId(client, audio, filePath)
+		cfileId := C.CString(fileId)
+		defer C.free(unsafe.Pointer(cfileId))
+
+		cpath := C.CString(filePath)
+		defer C.free(unsafe.Pointer(cpath))
+
+		content := (*C.FileMessage)(C.malloc(C.sizeof_FileMessage))
+		content.kind = C.uint8_t(FileTypeAudio)
+		content.path = cpath
+		content.fileID = cfileId
+		content.caption = nil
+		defer C.free(unsafe.Pointer(content))
+
+		message := C.Message{
+			info:        cinfo,
+			messageType: C.uint8_t(MessageTypeFile),
+			message:     unsafe.Pointer(content),
+		}
+		C.callMessageHandler(messageHandler, &message)
+	}
+	if msg.DocumentMessage != nil {
+		doc := msg.GetDocumentMessage()
+		if doc == nil {
+			LOG_ERROR("DocumentMessage is nil")
+			return
+		}
+
+		caption := doc.GetCaption()
+
+		context_info := doc.GetContextInfo()
+		if context_info != nil {
+			id := context_info.GetStanzaID()
+			if id != "" {
+				cinfo.quoteID = C.CString(id)
+			}
+		}
+
+		filePath := fmt.Sprintf("docs/%s-%s", info.ID, *doc.FileName)
+		fileId := DownloadableMessageToFileId(client, doc, filePath)
+		cfileId := C.CString(fileId)
+		defer C.free(unsafe.Pointer(cfileId))
+
+		cpath := C.CString(filePath)
+		defer C.free(unsafe.Pointer(cpath))
+
+		ccaption := C.CString(caption)
+		if caption == "" {
+			ccaption = nil
+		}
+		defer C.free(unsafe.Pointer(ccaption))
+
+		content := (*C.FileMessage)(C.malloc(C.sizeof_FileMessage))
+		content.kind = C.uint8_t(FileTypeDocument)
+		content.path = cpath
+		content.fileID = cfileId
+		content.caption = ccaption
+		defer C.free(unsafe.Pointer(content))
+
+		message := C.Message{
+			info:        cinfo,
+			messageType: C.uint8_t(MessageTypeFile),
+			message:     unsafe.Pointer(content),
+		}
+		C.callMessageHandler(messageHandler, &message)
+	}
+	if msg.StickerMessage != nil {
+		sticker := msg.GetStickerMessage()
+		if sticker == nil {
+			LOG_ERROR("StickerMessage is nil")
+			return
+		}
+
+		ext := ExtensionByType(sticker.GetMimetype(), ".webp")
+
+		context_info := sticker.GetContextInfo()
+		if context_info != nil {
+			id := context_info.GetStanzaID()
+			if id != "" {
+				cinfo.quoteID = C.CString(id)
+			}
+		}
+
+		filePath := fmt.Sprintf("stickers/%s%s", info.ID, ext)
+		fileId := DownloadableMessageToFileId(client, sticker, filePath)
+		cfileId := C.CString(fileId)
+		defer C.free(unsafe.Pointer(cfileId))
+
+		cpath := C.CString(filePath)
+		defer C.free(unsafe.Pointer(cpath))
+
+		content := (*C.FileMessage)(C.malloc(C.sizeof_FileMessage))
+		content.kind = C.uint8_t(FileTypeSticker)
+		content.path = cpath
+		content.fileID = cfileId
+		content.caption = nil
+		defer C.free(unsafe.Pointer(content))
+
+		message := C.Message{
+			info:        cinfo,
+			messageType: C.uint8_t(MessageTypeFile),
 			message:     unsafe.Pointer(content),
 		}
 		C.callMessageHandler(messageHandler, &message)
@@ -441,9 +632,10 @@ func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
 }
 
 //export C_DownloadFile
-func C_DownloadFile(fileId *C.char) C.uint8_t {
+func C_DownloadFile(fileId *C.char, basePath *C.char) C.uint8_t {
 	goFileId := C.GoString(fileId)
-	_, status := DownloadFromFileId(client, goFileId)
+	goBasePath := C.GoString(basePath)
+	status := DownloadFromFileId(client, goFileId, goBasePath)
 	return C.uint8_t(status)
 }
 
@@ -464,7 +656,7 @@ func AddEventHandlers() {
 
 		case *events.Receipt:
 			if evt.Type == types.ReceiptTypeRead || evt.Type == types.ReceiptTypeReadSelf {
-				LOG_INFO(fmt.Sprintf("%#v was read by %s at %s", evt.MessageIDs, evt.SourceString(), evt.Timestamp))
+				LOG_INFO("%#v was read by %s at %s", evt.MessageIDs, evt.SourceString(), evt.Timestamp)
 				// chatId := evt.MessageSource.Chat.ToNonAD().String()
 				// isRead := true
 				// for _, msgId := range evt.MessageIDs {
@@ -551,18 +743,11 @@ func C_SendMessage(cjid C.JID, ctext *C.char, quoted_msg *C.Message) {
 
 	contextInfo := &waE2E.ContextInfo{}
 	if quoted_msg != nil {
-		info, msg := CMessageToWaE2EMessage(quoted_msg)
+		info := CMessageInfoToGo(quoted_msg.info)
 		contextInfo.StanzaID = &info.ID
-		contextInfo.QuotedMessage = msg
+		// contextInfo.QuotedMessage = msg
 		quotedSender := info.Sender.String()
 		contextInfo.Participant = &quotedSender
-
-		LOG_INFO("ID %#v", info.ID)
-		LOG_INFO("Sender %#v", info.Sender.String())
-
-		// LOG_INFO("Info %#v", info)
-		// LOG_INFO("msg %#v", msg)
-		// LOG_INFO("QuotedMessage %#v", contextInfo)
 	}
 
 	var message waE2E.Message

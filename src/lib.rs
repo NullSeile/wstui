@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
 use std::{collections::HashMap, sync::Arc};
@@ -57,7 +58,8 @@ pub type MessagesStorage = HashMap<wr::JID, ChatMessages>;
 
 pub enum FileMeta {
     Downloaded,
-    Failed,
+    DownloadFailed,
+    LoadFailed,
 }
 
 pub enum Metadata {
@@ -69,6 +71,7 @@ pub type MetadataStorage = HashMap<wr::MessageId, Metadata>;
 pub enum AppEvent {
     StateSyncComplete,
     DownloadFile(wr::MessageId, wr::FileId),
+    SetFileState(wr::MessageId, FileMeta),
     HistoryPercent(u32),
 }
 
@@ -88,6 +91,7 @@ pub enum SelectedWidget {
 
 pub struct App<'a> {
     pub db_handler: DatabaseHandler,
+    pub media_path: &'a Path,
 
     pub messages: MessagesStorage,
     pub chats: ChatList,
@@ -130,6 +134,7 @@ impl Default for App<'_> {
 
         Self {
             db_handler: DatabaseHandler::new("whatsapp.db"),
+            media_path: Path::new("media"),
             messages: MessagesStorage::new(),
             chats: ChatList::new(),
             sorted_chats: Vec::new(),
@@ -228,10 +233,14 @@ impl App<'_> {
                         self.get_contacts();
                         self.sort_chats();
                     }
+                    AppEvent::SetFileState(message_id, state) => {
+                        self.metadata
+                            .insert(message_id.clone(), Metadata::File(state));
+                    }
                     AppEvent::DownloadFile(message_id, file_id) => {
-                        let state = match wr::download_file(&file_id) {
+                        let state = match wr::download_file(&file_id, self.media_path) {
                             Ok(_) => FileMeta::Downloaded,
-                            Err(_) => FileMeta::Failed,
+                            Err(_) => FileMeta::DownloadFailed,
                         };
 
                         self.metadata
@@ -242,7 +251,7 @@ impl App<'_> {
                     }
                 },
                 Ok(AppInput::Message(msg)) => {
-                    info!("Handling message: {:?}", msg);
+                    // info!("Handling message: {:?}", msg);
                     self.db_handler.add_message(&msg);
                     self.add_message(msg);
 

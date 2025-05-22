@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use log::info;
 use rusqlite::Connection;
+use strum::IntoEnumIterator;
 use whatsrust as wr;
 
 use crate::Chat;
@@ -70,8 +71,8 @@ impl DatabaseHandler {
                         let mut text_stmt = tx
                             .prepare("INSERT OR REPLACE INTO text_messages (id, chat_jid, sender_jid, timestamp, quote_id, is_from_me, read, message) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
                             .unwrap();
-                        let mut image_stmt = tx
-                            .prepare("INSERT OR REPLACE INTO image_messages (id, chat_jid, sender_jid, timestamp, quote_id, is_from_me, read, path, file_id, caption) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                        let mut file_stmt = tx
+                            .prepare("INSERT OR REPLACE INTO file_messages (id, chat_jid, sender_jid, timestamp, quote_id, is_from_me, read, kind, path, file_id, caption) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
                             .unwrap();
                         for msg in &messages {
                             match &msg.message {
@@ -89,8 +90,8 @@ impl DatabaseHandler {
                                         ])
                                         .unwrap();
                                 }
-                                wr::MessageContent::Image(image) => {
-                                    image_stmt
+                                wr::MessageContent::File(file) => {
+                                    file_stmt
                                         .execute(rusqlite::params![
                                             msg.info.id,
                                             msg.info.chat.0,
@@ -99,9 +100,10 @@ impl DatabaseHandler {
                                             msg.info.quote_id,
                                             msg.info.is_from_me,
                                             msg.info.is_read,
-                                            image.path,
-                                            image.file_id,
-                                            image.caption,
+                                            file.kind.clone() as u8,
+                                            file.path,
+                                            file.file_id,
+                                            file.caption,
                                         ])
                                         .unwrap();
                                 }
@@ -170,72 +172,81 @@ impl DatabaseHandler {
 
     pub fn get_messages(&self) -> Vec<wr::Message> {
         let mut messages = Vec::new();
+        for kind in wr::MessageContent::iter() {
+            let msgs = match kind {
+                wr::MessageContent::Text(_) => {
+                    let mut query = self.db.prepare("SELECT * FROM text_messages").unwrap();
+                    query
+                        .query_map([], |row| {
+                            let id: String = row.get(0).unwrap();
+                            let chat_jid: String = row.get(1).unwrap();
+                            let sender_jid: String = row.get(2).unwrap();
+                            let timestamp: i64 = row.get(3).unwrap();
+                            let quote_id: Option<String> = row.get(4).unwrap_or(None);
+                            let is_from_me: bool = row.get(5).unwrap();
+                            let is_read: bool = row.get(6).unwrap();
 
-        let mut text_query = self.db.prepare("SELECT * FROM text_messages").unwrap();
+                            let message: String = row.get(7).unwrap();
 
-        let text_messages = text_query
-            .query_map([], |row| {
-                let id: String = row.get(0).unwrap();
-                let chat_jid: String = row.get(1).unwrap();
-                let sender_jid: String = row.get(2).unwrap();
-                let timestamp: i64 = row.get(3).unwrap();
-                let quote_id: Option<String> = row.get(4).unwrap_or(None);
-                let is_from_me: bool = row.get(5).unwrap();
-                let is_read: bool = row.get(6).unwrap();
+                            Ok(wr::Message {
+                                info: wr::MessageInfo {
+                                    id: id.into(),
+                                    chat: chat_jid.into(),
+                                    sender: sender_jid.into(),
+                                    timestamp,
+                                    quote_id: quote_id.map(|q| q.into()),
+                                    is_from_me,
+                                    is_read,
+                                },
+                                message: wr::MessageContent::Text(message.into()),
+                            })
+                        })
+                        .unwrap()
+                        .collect::<Vec<Result<_, _>>>()
+                }
+                wr::MessageContent::File(_) => {
+                    let mut query = self.db.prepare("SELECT * FROM file_messages").unwrap();
+                    query
+                        .query_map([], |row| {
+                            let id: String = row.get(0).unwrap();
+                            let chat_jid: String = row.get(1).unwrap();
+                            let sender_jid: String = row.get(2).unwrap();
+                            let timestamp: i64 = row.get(3).unwrap();
+                            let quote_id: Option<String> = row.get(4).unwrap_or(None);
+                            let is_from_me: bool = row.get(5).unwrap();
+                            let is_read: bool = row.get(6).unwrap();
 
-                let message: String = row.get(7).unwrap();
+                            let kind: u8 = row.get(7).unwrap();
+                            let path: String = row.get(8).unwrap();
+                            let file_id: String = row.get(9).unwrap();
+                            let caption: Option<String> = row.get(10).unwrap_or(None);
 
-                Ok(wr::Message {
-                    info: wr::MessageInfo {
-                        id: id.into(),
-                        chat: chat_jid.into(),
-                        sender: sender_jid.into(),
-                        timestamp,
-                        quote_id: quote_id.map(|q| q.into()),
-                        is_from_me,
-                        is_read,
-                    },
-                    message: wr::MessageContent::Text(message.into()),
-                })
-            })
-            .unwrap();
+                            Ok(wr::Message {
+                                info: wr::MessageInfo {
+                                    id: id.into(),
+                                    chat: chat_jid.into(),
+                                    sender: sender_jid.into(),
+                                    timestamp,
+                                    quote_id: quote_id.map(|q| q.into()),
+                                    is_from_me,
+                                    is_read,
+                                },
+                                message: wr::MessageContent::File(wr::FileContent {
+                                    kind: wr::FileKind::from_repr(kind).unwrap(),
+                                    path: path.into(),
+                                    file_id: file_id.into(),
+                                    caption: caption.map(|c| c.into()),
+                                }),
+                            })
+                        })
+                        .unwrap()
+                        .collect::<Vec<Result<_, _>>>()
+                }
+            };
 
-        let mut img_query = self.db.prepare("SELECT * FROM image_messages").unwrap();
-        let image_messages = img_query
-            .query_map([], |row| {
-                let id: String = row.get(0).unwrap();
-                let chat_jid: String = row.get(1).unwrap();
-                let sender_jid: String = row.get(2).unwrap();
-                let timestamp: i64 = row.get(3).unwrap();
-                let quote_id: Option<String> = row.get(4).unwrap_or(None);
-                let is_from_me: bool = row.get(5).unwrap();
-                let is_read: bool = row.get(6).unwrap();
-
-                let path: String = row.get(7).unwrap();
-                let file_id: String = row.get(8).unwrap();
-                let caption: Option<String> = row.get(9).unwrap_or(None);
-
-                Ok(wr::Message {
-                    info: wr::MessageInfo {
-                        id: id.into(),
-                        chat: chat_jid.into(),
-                        sender: sender_jid.into(),
-                        timestamp,
-                        quote_id: quote_id.map(|q| q.into()),
-                        is_from_me,
-                        is_read,
-                    },
-                    message: wr::MessageContent::Image(wr::ImageContent {
-                        path: path.into(),
-                        file_id: file_id.into(),
-                        caption: caption.map(|c| c.into()),
-                    }),
-                })
-            })
-            .unwrap();
-
-        for msg in image_messages.chain(text_messages) {
-            messages.push(msg.unwrap());
+            for msg in msgs {
+                messages.push(msg.unwrap());
+            }
         }
 
         messages
@@ -252,40 +263,48 @@ impl DatabaseHandler {
             )
             .unwrap();
 
-        self.db
-            .execute(
-                "CREATE TABLE IF NOT EXISTS text_messages (
-                    id TEXT PRIMARY KEY,
-                    chat_jid TEXT,
-                    sender_jid TEXT,
-                    timestamp INTEGER,
-                    quote_id TEXT,
-                    is_from_me INTEGER,
-                    read INTEGER,
+        for kind in wr::MessageContent::iter() {
+            match kind {
+                wr::MessageContent::Text(_) => {
+                    self.db
+                        .execute(
+                            "CREATE TABLE IF NOT EXISTS text_messages (
+                                id TEXT PRIMARY KEY,
+                                chat_jid TEXT,
+                                sender_jid TEXT,
+                                timestamp INTEGER,
+                                quote_id TEXT,
+                                is_from_me INTEGER,
+                                read INTEGER,
 
-                    message TEXT
-                )",
-                [],
-            )
-            .unwrap();
+                                message TEXT
+                            )",
+                            [],
+                        )
+                        .unwrap();
+                }
+                wr::MessageContent::File(_) => {
+                    self.db
+                        .execute(
+                            "CREATE TABLE IF NOT EXISTS file_messages (
+                                id TEXT PRIMARY KEY,
+                                chat_jid TEXT,
+                                sender_jid TEXT,
+                                timestamp INTEGER,
+                                quote_id TEXT,
+                                is_from_me INTEGER,
+                                read INTEGER,
 
-        self.db
-            .execute(
-                "CREATE TABLE IF NOT EXISTS image_messages (
-                    id TEXT PRIMARY KEY,
-                    chat_jid TEXT,
-                    sender_jid TEXT,
-                    timestamp INTEGER,
-                    quote_id TEXT,
-                    is_from_me INTEGER,
-                    read INTEGER,
-
-                    path TEXT,
-                    file_id TEXT,
-                    caption TEXT
-                )",
-                [],
-            )
-            .unwrap();
+                                kind INTEGER,
+                                path TEXT,
+                                file_id TEXT,
+                                caption TEXT
+                            )",
+                            [],
+                        )
+                        .unwrap();
+                }
+            }
+        }
     }
 }

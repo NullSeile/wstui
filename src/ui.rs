@@ -33,19 +33,33 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
         if let Some(msg) = app.messages.get(&chat_id).and_then(|m| m.get(&msg_id)) {
             match msg.message {
-                wr::MessageContent::Image(ref image) => {
-                    if let Some(image) = app.image_cache.get_mut(&image.path) {
-                        frame.render_stateful_widget(
-                            StatefulImage::default().resize(Resize::Scale(None)),
-                            area,
-                            image,
-                        );
-                    }
-                }
                 wr::MessageContent::Text(ref text) => {
                     let paragraph = Paragraph::new(text.to_string());
                     frame.render_widget(paragraph, area);
                 }
+                wr::MessageContent::File(ref file) => match file.kind {
+                    wr::FileKind::Image | wr::FileKind::Sticker => {
+                        if let Some(image) = app.image_cache.get_mut(&file.path) {
+                            frame.render_stateful_widget(
+                                StatefulImage::default().resize(Resize::Scale(None)),
+                                area,
+                                image,
+                            );
+                        }
+                    }
+                    wr::FileKind::Video => {
+                        let paragraph = Paragraph::new("Video not supported yet");
+                        frame.render_widget(paragraph, area);
+                    }
+                    wr::FileKind::Audio => {
+                        let paragraph = Paragraph::new("Audio not supported yet");
+                        frame.render_widget(paragraph, area);
+                    }
+                    wr::FileKind::Document => {
+                        let paragraph = Paragraph::new("Document not supported yet");
+                        frame.render_widget(paragraph, area);
+                    }
+                },
             }
         }
 
@@ -106,7 +120,6 @@ pub fn render_chats(frame: &mut Frame, app: &mut App, area: Rect) {
     render_messages(frame, app, chat_area);
 
     if let Some(_chat_jid) = app.selected_chat_jid.clone() {
-        // let input_block = Block::default().title("Input").borders(Borders::ALL);
         let input_block = app.input_border.clone().border_style(Style::default().fg(
             if let SelectedWidget::Input = app.selected_widget {
                 ratatui::style::Color::Green

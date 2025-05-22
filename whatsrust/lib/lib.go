@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"go.mau.fi/whatsmeow"
 	"os"
+	"path"
 )
 
 const (
@@ -111,15 +112,16 @@ func FileIdToDownloadInfo(fileId string) (DownloadInfo, error) {
 	}
 	return info, nil
 }
-func DownloadFromFileId(client *whatsmeow.Client, fileId string) (string, int) {
+func DownloadFromFileId(client *whatsmeow.Client, fileId string, basePath string) int {
 	info, err := FileIdToDownloadInfo(fileId)
 	if err != nil {
-		return "", FileStatusDownloadFailed
+		return FileStatusDownloadFailed
 	}
 
-	targetPath := info.TargetPath
-	filePath := ""
+	targetPath := path.Join(basePath, info.TargetPath)
 	fileStatus := FileStatusNone
+
+	os.MkdirAll(path.Dir(targetPath), os.ModePerm)
 
 	// download if not yet present
 	if _, statErr := os.Stat(targetPath); os.IsNotExist(statErr) {
@@ -136,15 +138,13 @@ func DownloadFromFileId(client *whatsmeow.Client, fileId string) (string, int) {
 				if err != nil {
 					fileStatus = FileStatusDownloadFailed
 				} else {
-					filePath = targetPath
 					fileStatus = FileStatusDownloaded
 				}
 			}
 		}
 	} else {
-		filePath = targetPath
 		fileStatus = FileStatusDownloaded
 	}
 
-	return filePath, fileStatus
+	return fileStatus
 }

@@ -1,12 +1,14 @@
 use std::{
     collections::HashMap,
     ffi::{CStr, CString, c_char, c_void},
+    path::Path,
     sync::{Arc, Mutex},
 };
 
 #[macro_use]
 mod callbacks;
 use callbacks::CallbackTranslator;
+use strum::{EnumIter, FromRepr};
 
 type CJID = *const c_char;
 
@@ -80,7 +82,8 @@ struct CTextMessage {
 }
 
 #[repr(C)]
-struct CImageMessage {
+struct CFileMessage {
+    kind: u8,
     path: *const c_char,
     file_id: *const c_char,
     caption: *const c_char,
@@ -89,7 +92,7 @@ struct CImageMessage {
 #[repr(C)]
 struct CMessage {
     info: CMessageInfo,
-    message_type: i8,
+    message_type: u8,
     message: *const c_void,
 }
 
@@ -106,32 +109,38 @@ pub struct MessageInfo {
     pub is_read: bool,
 }
 
+#[derive(FromRepr)]
+#[repr(u8)]
 enum MessageType {
     Text = 0,
-    Image = 1,
+    File = 1,
 }
 
-fn get_message_type(message_type: i8) -> MessageType {
-    match message_type {
-        0 => MessageType::Text,
-        1 => MessageType::Image,
-        _ => panic!("Unknown message type"),
-    }
+#[derive(Clone, Debug, Default, FromRepr)]
+#[repr(u8)]
+pub enum FileKind {
+    #[default]
+    Image = 0,
+    Video = 1,
+    Audio = 2,
+    Document = 3,
+    Sticker = 4,
 }
 
 pub type FileId = Arc<str>;
 
-#[derive(Clone, Debug)]
-pub struct ImageContent {
+#[derive(Clone, Debug, Default)]
+pub struct FileContent {
+    pub kind: FileKind,
     pub path: Arc<str>,
     pub file_id: FileId,
     pub caption: Option<Arc<str>>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, EnumIter)]
 pub enum MessageContent {
     Text(Arc<str>),
-    Image(ImageContent),
+    File(FileContent),
 }
 
 #[derive(Clone, Debug)]
@@ -192,12 +201,12 @@ type CHistorySyncCallback = extern "C" fn(u32, *mut c_void);
 unsafe extern "C" {
     fn C_NewClient(db_path: *const c_char);
     fn C_Connect(qr_cb: CQrCallback, data: *mut c_void);
-    fn C_SendMessage(jid: CJID, message: *const c_char, quoted_message: *const CMessage);
+    fn C_SendMessage(jid: CJID, message: *const c_char, quoted_message: *const CMessageInfo);
     fn C_GetAllContacts() -> CContactsMapResult;
     fn C_GetJoinedGroups() -> CGetGroupInfoResult;
     fn C_Disconnect();
     fn C_PairPhone(phone: *const c_char) -> *const c_char;
-    fn C_DownloadFile(file_id: *const c_char) -> u8;
+    fn C_DownloadFile(file_id: *const c_char, base_path: *const c_char) -> u8;
 
     fn C_SetMessageHandler(message_cb: CMessageCallback, data: *mut c_void);
     fn C_SetHistorySyncHandler(history_sync_cb: CHistorySyncCallback, data: *mut c_void);
@@ -207,9 +216,10 @@ unsafe extern "C" {
 
 pub struct DownloadFailed;
 
-pub fn download_file(file_id: &FileId) -> Result<(), DownloadFailed> {
+pub fn download_file(file_id: &FileId, base_path: &Path) -> Result<(), DownloadFailed> {
     let file_id_c = CString::new(file_id.as_ref()).unwrap();
-    let code = unsafe { C_DownloadFile(file_id_c.as_ptr()) };
+    let base_path_c = CString::new(base_path.to_str().unwrap()).unwrap();
+    let code = unsafe { C_DownloadFile(file_id_c.as_ptr(), base_path_c.as_ptr()) };
     if code == 0 {
         Ok(())
     } else {
@@ -253,7 +263,7 @@ impl CallbackTranslator<*const CMessage> for Message {
             )
         };
 
-        let message = match get_message_type(msg.message_type) {
+        let message = match MessageType::from_repr(msg.message_type).unwrap() {
             MessageType::Text => {
                 let text_message = unsafe { &*(msg.message as *const CTextMessage) };
 
@@ -263,8 +273,8 @@ impl CallbackTranslator<*const CMessage> for Message {
                     .into();
                 MessageContent::Text(message)
             }
-            MessageType::Image => {
-                let image_message = unsafe { &*(msg.message as *const CImageMessage) };
+            MessageType::File => {
+                let image_message = unsafe { &*(msg.message as *const CFileMessage) };
 
                 let path = unsafe { CStr::from_ptr(image_message.path) }
                     .to_string_lossy()
@@ -286,7 +296,8 @@ impl CallbackTranslator<*const CMessage> for Message {
                             .into(),
                     )
                 };
-                MessageContent::Image(ImageContent {
+                MessageContent::File(FileContent {
+                    kind: FileKind::from_repr(image_message.kind).unwrap(),
                     path,
                     file_id,
                     caption,
@@ -312,7 +323,7 @@ impl CallbackTranslator<*const CMessage> for Message {
 setup_handler!(
     set_message_handler,
     C_SetMessageHandler,
-    msg : *const CMessage => Message
+    msg: *const CMessage => Message
 );
 
 impl CallbackTranslator<*const c_char> for String {
@@ -362,52 +373,23 @@ pub fn send_message(jid: &JID, message: &str, quoted_message: Option<&Message>) 
         let quoted_sender = CJID::from(&quoted_message.info.sender);
         let quoted_id = CString::new(quoted_message.info.id.as_ref()).unwrap();
 
-        let message_content = match quoted_message.message {
-            MessageContent::Text(ref text) => {
-                let text = CString::new(text.as_ref()).unwrap();
-                let text_message = Box::new(CTextMessage {
-                    text: text.into_raw(),
-                });
-                (
-                    MessageType::Text,
-                    Box::into_raw(text_message) as *const c_void,
-                )
-            }
-            MessageContent::Image(ref image) => {
-                let image_message = Box::new(CImageMessage {
-                    path: CString::new(image.path.as_ref()).unwrap().into_raw(),
-                    file_id: CString::new(image.file_id.as_ref()).unwrap().into_raw(),
-                    caption: image.caption.as_ref().map_or(std::ptr::null(), |cap| {
-                        CString::new(cap.as_ref()).unwrap().into_raw()
-                    }),
-                });
-                (
-                    MessageType::Image,
-                    Box::into_raw(image_message) as *const c_void,
-                )
-            }
+        let info = CMessageInfo {
+            id: quoted_id.as_ptr(),
+            chat: quoted_chat,
+            sender: quoted_sender,
+            timestamp: quoted_message.info.timestamp,
+            is_from_me: quoted_message.info.is_from_me,
+            quote_id: quoted_message
+                .info
+                .quote_id
+                .as_ref()
+                .map_or(std::ptr::null(), |q| {
+                    CString::new(q.as_ref()).unwrap().into_raw()
+                }),
+            is_read: quoted_message.info.is_read,
         };
 
-        let message = CMessage {
-            info: CMessageInfo {
-                id: quoted_id.as_ptr(),
-                chat: quoted_chat,
-                sender: quoted_sender,
-                timestamp: quoted_message.info.timestamp,
-                is_from_me: quoted_message.info.is_from_me,
-                quote_id: quoted_message
-                    .info
-                    .quote_id
-                    .as_ref()
-                    .map_or(std::ptr::null(), |q| {
-                        CString::new(q.as_ref()).unwrap().into_raw()
-                    }),
-                is_read: quoted_message.info.is_read,
-            },
-            message_type: message_content.0 as i8,
-            message: message_content.1,
-        };
-        unsafe { C_SendMessage(jid_c, message_c.as_ptr(), &message as *const _) }
+        unsafe { C_SendMessage(jid_c, message_c.as_ptr(), &info as *const _) }
     } else {
         unsafe { C_SendMessage(jid_c, message_c.as_ptr(), std::ptr::null()) }
     }

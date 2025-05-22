@@ -13,7 +13,8 @@ chrono = "0.4.40"
 image = "0.25.6"
 rusqlite = { version = "0.34.0", features = ["bundled"] }
 ratatui = "0.29.0"
-ratatui-image = "5.0.0"
+ratatui-image = "8.0.0"
+strum = { version = "0.27", features = ["derive"] }
 tui-textarea = "0.7.0"
 tui-logger = "0.17.1"
 qr2term = "0.3.3"
