@@ -201,35 +201,9 @@ fn render_message(
                                         )))
                                         .unwrap();
                                 }
-
-                                // app.image_cache.insert(data.path.clone());
                             }
-
-                            // let image =
-                            //     app.image_cache.entry(data.path.clone()).or_insert_with(|| {
-                            //         let binding = data.path.to_string();
-                            //         let image_path = std::path::Path::new(&binding);
-                            //
-                            //         let image_src =
-                            //             image::ImageReader::open(app.media_path.join(image_path))
-                            //                 .unwrap()
-                            //                 .decode()
-                            //                 .unwrap();
-                            //
-                            //         app.picker.new_resize_protocol(image_src)
-                            //     });
-                            // StatefulImage::default().render(media_area, buf, image);
                         }
-                        // FileKind::Sticker => {
-                        //     Paragraph::new(format!("🔗 {} ✓", data.path)).render(media_area, buf);
-                        // }
-                        FileKind::Video => {
-                            Paragraph::new(format!("🔗 {} ✓", data.path)).render(media_area, buf);
-                        }
-                        FileKind::Audio => {
-                            Paragraph::new(format!("🔗 {} ✓", data.path)).render(media_area, buf);
-                        }
-                        FileKind::Document => {
+                        FileKind::Video | FileKind::Audio | FileKind::Document => {
                             Paragraph::new(format!("🔗 {} ✓", data.path)).render(media_area, buf);
                         }
                     },

@@ -8,6 +8,7 @@ use std::{
 #[macro_use]
 mod callbacks;
 use callbacks::CallbackTranslator;
+use log::info;
 use strum::{EnumIter, FromRepr};
 
 type CJID = *const c_char;
@@ -96,6 +97,13 @@ struct CMessage {
     message: *const c_void,
 }
 
+#[derive(Clone, Debug)]
+#[repr(C)]
+struct CEvent {
+    event_type: u8,
+    data: *const c_void,
+}
+
 pub type MessageId = Arc<str>;
 
 #[derive(Clone, Debug)]
@@ -125,6 +133,19 @@ pub enum FileKind {
     Audio = 2,
     Document = 3,
     Sticker = 4,
+}
+
+#[derive(Clone, Debug, FromRepr)]
+#[repr(u8)]
+enum EventType {
+    SyncProgress = 0,
+    AppStateSyncComplete = 1,
+}
+
+#[derive(Clone, Debug)]
+pub enum Event {
+    SyncProgress(u8),
+    AppStateSyncComplete,
 }
 
 pub type FileId = Arc<str>;
@@ -196,8 +217,9 @@ impl From<&CContact> for Contact {
 type CLogCallback = extern "C" fn(*const c_char, u8, *mut c_void);
 type CQrCallback = extern "C" fn(*const c_char, *mut c_void);
 type CMessageCallback = extern "C" fn(*const CMessage, *mut c_void);
-type CEventCallback = extern "C" fn(*mut c_void);
-type CHistorySyncCallback = extern "C" fn(u32, *mut c_void);
+type CStateSyncCompleteCallback = extern "C" fn(*mut c_void);
+type CEventCallback = extern "C" fn(*const CEvent, *mut c_void);
+// type CHistorySyncCallback = extern "C" fn(u32, *mut c_void);
 unsafe extern "C" {
     fn C_NewClient(db_path: *const c_char);
     fn C_Connect(qr_cb: CQrCallback, data: *mut c_void);
@@ -209,9 +231,10 @@ unsafe extern "C" {
     fn C_DownloadFile(file_id: *const c_char, base_path: *const c_char) -> u8;
 
     fn C_SetMessageHandler(message_cb: CMessageCallback, data: *mut c_void);
-    fn C_SetHistorySyncHandler(history_sync_cb: CHistorySyncCallback, data: *mut c_void);
+    fn C_SetEventHandler(event_cb: CEventCallback, data: *mut c_void);
+    // fn C_SetHistorySyncHandler(history_sync_cb: CHistorySyncCallback, data: *mut c_void);
     fn C_SetLogHandler(log_fn: CLogCallback, data: *mut c_void);
-    fn C_SetStateSyncCompleteHandler(event_cb: CEventCallback, data: *mut c_void);
+    // fn C_SetStateSyncCompleteHandler(event_cb: CStateSyncCompleteCallback, data: *mut c_void);
 }
 
 pub struct DownloadFailed;
@@ -240,6 +263,25 @@ pub fn new_client(db_path: &str) {
     let db_path_c = CString::new(db_path).unwrap();
     unsafe { C_NewClient(db_path_c.as_ptr()) }
 }
+
+impl CallbackTranslator<*const CEvent> for Event {
+    unsafe fn to_rust(ptr: *const CEvent) -> Self {
+        let event = unsafe { &(*ptr) };
+        match EventType::from_repr(event.event_type).unwrap() {
+            EventType::SyncProgress => {
+                let percent = unsafe { *(event.data as *const u8) };
+                Event::SyncProgress(percent)
+            }
+            EventType::AppStateSyncComplete => Event::AppStateSyncComplete,
+        }
+    }
+}
+
+setup_handler!(
+    set_event_handler,
+    C_SetEventHandler,
+    event: *const CEvent => Event,
+);
 
 impl CallbackTranslator<*const CMessage> for Message {
     unsafe fn to_rust(ptr: *const CMessage) -> Self {
@@ -344,18 +386,6 @@ setup_handler!(
     C_SetLogHandler,
     msg: *const c_char => String,
     level: u8 => u8
-);
-
-impl CallbackTranslator<u32> for u32 {
-    unsafe fn to_rust(ptr: u32) -> u32 {
-        ptr
-    }
-}
-setup_handler!(set_history_sync_handler, C_SetHistorySyncHandler, percent: u32 => u32);
-
-setup_handler!(
-    set_state_sync_complete_handler,
-    C_SetStateSyncCompleteHandler,
 );
 
 setup_handler!(connect, C_Connect, qr: *const c_char => String);

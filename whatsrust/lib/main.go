@@ -59,6 +59,21 @@ typedef struct {
 	void* message;
 } Message;
 
+
+typedef struct {
+	uint8_t kind;
+	void* data;
+} Event;
+
+typedef void (*EventCallback)(const Event*, void*);
+typedef struct {
+	EventCallback callback;
+	void* user_data;
+} EventHandler;
+static void callEventCallback(EventHandler hdl, const Event* event) {
+	hdl.callback(event, hdl.user_data);
+}
+
 typedef void (*QrCallback)(const char*, void*);
 static void callQrCallback(QrCallback cb, const char* code, void* user_data) {
 	cb(code, user_data);
@@ -71,15 +86,6 @@ typedef struct {
 } MessageHandler;
 static void callMessageHandler(MessageHandler hdl, const Message* data) {
     hdl.callback(data, hdl.user_data);
-}
-
-typedef void (*StateSyncCompleteCallback)(void*);
-typedef struct {
-	StateSyncCompleteCallback callback;
-	void* user_data;
-} StateSyncCompleteHandler;
-static void callStateSyncComplete(StateSyncCompleteHandler hdl) {
-	hdl.callback(hdl.user_data);
 }
 
 typedef void (*HistorySyncCallback)(uint32_t, void*);
@@ -127,8 +133,7 @@ var qrChan <-chan whatsmeow.QRChannelItem
 
 var logHandler C.LogHandler
 var messageHandler C.MessageHandler
-var StateSyncCompleteHandler C.StateSyncCompleteHandler
-var historySyncHandler C.HistorySyncHandler
+var eventHandler C.EventHandler
 
 func LOG_LEVEL(level int, msg string, args ...any) {
 	cmsg := C.CString(fmt.Sprintf(msg, args...))
@@ -195,14 +200,17 @@ func contactToC(contact types.ContactInfo) C.Contact {
 }
 
 //export C_SetLogHandler
-func C_SetLogHandler(handler C.LogHandler) {
-	logHandler = handler
+func C_SetLogHandler(handler C.LogHandler, data unsafe.Pointer) {
+	logHandler = C.LogHandler{
+		callback:  handler.callback,
+		user_data: data,
+	}
 }
 
-//export C_SetHistorySyncHandler
-func C_SetHistorySyncHandler(callback C.HistorySyncCallback, data unsafe.Pointer) {
-	historySyncHandler = C.HistorySyncHandler{
-		callback:  callback,
+//export C_SetEventHandler
+func C_SetEventHandler(handler C.EventHandler, data unsafe.Pointer) {
+	eventHandler = C.EventHandler{
+		callback:  handler.callback,
 		user_data: data,
 	}
 }
@@ -210,14 +218,6 @@ func C_SetHistorySyncHandler(callback C.HistorySyncCallback, data unsafe.Pointer
 //export C_SetMessageHandler
 func C_SetMessageHandler(callback C.MessageHandlerCallback, data unsafe.Pointer) {
 	messageHandler = C.MessageHandler{
-		callback:  callback,
-		user_data: data,
-	}
-}
-
-//export C_SetStateSyncCompleteHandler
-func C_SetStateSyncCompleteHandler(callback C.StateSyncCompleteCallback, data unsafe.Pointer) {
-	StateSyncCompleteHandler = C.StateSyncCompleteHandler{
 		callback:  callback,
 		user_data: data,
 	}
@@ -284,6 +284,11 @@ func ExtensionByType(mimeType string, defaultExt string) string {
 
 	return ext
 }
+
+const (
+	EventTypeSyncProgress = iota
+	EventTypeAppStateSyncComplete
+)
 
 const (
 	MessageTypeText = iota
@@ -646,9 +651,16 @@ func AddEventHandlers() {
 			LOG_ERROR("AppStateStateSyncComplete %v", evt)
 			if evt.Name == appstate.WAPatchRegular {
 				LOG_ERROR("AppStateStateSyncComplete %v", evt)
-				if StateSyncCompleteHandler.callback != nil {
-					C.callStateSyncComplete(StateSyncCompleteHandler)
+
+				cevent := C.Event{
+					kind: C.uint8_t(EventTypeAppStateSyncComplete),
+					data: nil,
 				}
+				C.callEventCallback(eventHandler, &cevent)
+
+				// if StateSyncCompleteHandler.callback != nil {
+				// 	C.callStateSyncComplete(StateSyncCompleteHandler)
+				// }
 			}
 
 		case *events.Message:
@@ -669,10 +681,17 @@ func AddEventHandlers() {
 			selfJid := *client.Store.ID
 
 			percent := evt.Data.GetProgress()
-			// LOG_WARN("History sync progress: %d %%", percent)
-			if historySyncHandler.callback != nil {
-				C.callHistorySync(historySyncHandler, C.uint32_t(percent))
+			cpercent := (*C.uint8_t)(C.malloc(C.size_t(unsafe.Sizeof(uint8(0)))))
+			*cpercent = C.uint8_t(percent)
+
+			cevent := C.Event{
+				kind: C.uint8_t(EventTypeSyncProgress),
+				data: unsafe.Pointer(cpercent),
 			}
+
+			C.callEventCallback(eventHandler, &cevent)
+
+			C.free(unsafe.Pointer(cpercent))
 
 			conversations := evt.Data.GetConversations()
 			for _, conversation := range conversations {

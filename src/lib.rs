@@ -69,16 +69,17 @@ pub enum Metadata {
 pub type MetadataStorage = HashMap<wr::MessageId, Metadata>;
 
 pub enum AppEvent {
-    StateSyncComplete,
+    // StateSyncComplete,
     DownloadFile(wr::MessageId, wr::FileId),
     SetFileState(wr::MessageId, FileMeta),
-    HistoryPercent(u32),
+    // HistoryPercent(u8),
 }
 
 pub enum AppInput {
     Noop,
     App(AppEvent),
     Message(wr::Message),
+    WhatsApp(wr::Event),
     Terminal(Event),
 }
 
@@ -99,7 +100,7 @@ pub struct App<'a> {
     pub selected_chat_jid: Option<wr::JID>,
     pub selected_chat_index: Option<usize>,
 
-    pub history_sync_percent: Option<u32>,
+    pub history_sync_percent: Option<u8>,
 
     pub quoting_message: Option<wr::Message>,
     pub message_list_state: MessageListState,
@@ -177,19 +178,11 @@ impl App<'_> {
                 tx.send(AppInput::Noop).unwrap();
             });
         }
-
         {
             let tx = self.tx.clone();
-            wr::set_history_sync_handler(move |percent| {
-                tx.send(AppInput::App(AppEvent::HistoryPercent(percent)))
-                    .unwrap();
-            });
-        }
-        {
-            let tx = self.tx.clone();
-            wr::set_state_sync_complete_handler(move || {
-                tx.send(AppInput::App(AppEvent::StateSyncComplete)).unwrap();
-            });
+            wr::set_event_handler(move |event| {
+                tx.send(AppInput::WhatsApp(event)).unwrap();
+            })
         }
         {
             let tx = self.tx.clone();
@@ -210,7 +203,6 @@ impl App<'_> {
             }
         });
 
-        // fn C_AddEventHandlers();
         let mut terminal = ratatui::init();
 
         {
@@ -229,10 +221,6 @@ impl App<'_> {
 
             match self.rx.recv() {
                 Ok(AppInput::App(event)) => match event {
-                    AppEvent::StateSyncComplete => {
-                        self.get_contacts();
-                        self.sort_chats();
-                    }
                     AppEvent::SetFileState(message_id, state) => {
                         self.metadata
                             .insert(message_id.clone(), Metadata::File(state));
@@ -246,12 +234,17 @@ impl App<'_> {
                         self.metadata
                             .insert(message_id.clone(), Metadata::File(state));
                     }
-                    AppEvent::HistoryPercent(percent) => {
+                },
+                Ok(AppInput::WhatsApp(event)) => match event {
+                    wr::Event::AppStateSyncComplete => {
+                        self.get_contacts();
+                        self.sort_chats();
+                    }
+                    wr::Event::SyncProgress(percent) => {
                         self.history_sync_percent = Some(percent);
                     }
                 },
                 Ok(AppInput::Message(msg)) => {
-                    // info!("Handling message: {:?}", msg);
                     self.db_handler.add_message(&msg);
                     self.add_message(msg);
 
