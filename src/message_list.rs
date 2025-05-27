@@ -28,7 +28,6 @@ fn file_content_height(id: &wr::MessageId, file: &wr::FileContent, app: &mut App
                 FileMeta::Downloaded => 12,
             },
         },
-        // FileKind::Sticker => 1,
         FileKind::Video => 1,
         FileKind::Audio => 1,
         FileKind::Document => 1,
@@ -112,10 +111,12 @@ fn render_message(
     }
     let sender_widget = Line::from_iter(header).bold();
 
-    let quoted_text = message.info.quote_id.as_ref().and_then(|quote_id| {
-        let chat_messages = app.messages.get(app.selected_chat_jid.as_ref().unwrap());
-        chat_messages.and_then(|chat_messages| chat_messages.get(quote_id).map(get_quoted_text))
-    });
+    let quoted_text = message
+        .info
+        .quote_id
+        .as_ref()
+        .and_then(|quote_id| app.messages.get(quote_id).map(get_quoted_text));
+
     let quote_widget = message.info.quote_id.as_ref().map(|_quote_id| {
         let quoted_text = quoted_text.unwrap_or_else(|| "not found".into());
 
@@ -123,7 +124,7 @@ fn render_message(
         if is_selected {
             line.dark_gray()
         } else {
-            line.gray()
+            line.dark_gray()
         }
     });
 
@@ -241,10 +242,13 @@ pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<(
         return Some(());
     }
 
-    let chat_messages = app.messages.get(chat_jid)?;
-
-    let mut items = chat_messages.values().cloned().collect::<Vec<_>>();
-    items.sort_by(|a, b| b.info.timestamp.cmp(&a.info.timestamp));
+    let items = app
+        .chat_messages
+        .get(chat_jid)?
+        .iter()
+        .rev()
+        .map(|msg_id| app.messages.get(msg_id).unwrap().clone())
+        .collect::<Vec<_>>();
 
     if items.is_empty() {
         app.message_list_state.select(None);

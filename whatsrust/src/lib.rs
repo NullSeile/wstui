@@ -216,10 +216,8 @@ impl From<&CContact> for Contact {
 
 type CLogCallback = extern "C" fn(*const c_char, u8, *mut c_void);
 type CQrCallback = extern "C" fn(*const c_char, *mut c_void);
-type CMessageCallback = extern "C" fn(*const CMessage, *mut c_void);
-type CStateSyncCompleteCallback = extern "C" fn(*mut c_void);
+type CMessageCallback = extern "C" fn(*const CMessage, bool, *mut c_void);
 type CEventCallback = extern "C" fn(*const CEvent, *mut c_void);
-// type CHistorySyncCallback = extern "C" fn(u32, *mut c_void);
 unsafe extern "C" {
     fn C_NewClient(db_path: *const c_char);
     fn C_Connect(qr_cb: CQrCallback, data: *mut c_void);
@@ -232,9 +230,7 @@ unsafe extern "C" {
 
     fn C_SetMessageHandler(message_cb: CMessageCallback, data: *mut c_void);
     fn C_SetEventHandler(event_cb: CEventCallback, data: *mut c_void);
-    // fn C_SetHistorySyncHandler(history_sync_cb: CHistorySyncCallback, data: *mut c_void);
     fn C_SetLogHandler(log_fn: CLogCallback, data: *mut c_void);
-    // fn C_SetStateSyncCompleteHandler(event_cb: CStateSyncCompleteCallback, data: *mut c_void);
 }
 
 pub struct DownloadFailed;
@@ -280,7 +276,7 @@ impl CallbackTranslator<*const CEvent> for Event {
 setup_handler!(
     set_event_handler,
     C_SetEventHandler,
-    event: *const CEvent => Event,
+    event: *const CEvent => Event
 );
 
 impl CallbackTranslator<*const CMessage> for Message {
@@ -362,10 +358,17 @@ impl CallbackTranslator<*const CMessage> for Message {
     }
 }
 
+impl CallbackTranslator<bool> for bool {
+    unsafe fn to_rust(ptr: bool) -> bool {
+        ptr
+    }
+}
+
 setup_handler!(
     set_message_handler,
     C_SetMessageHandler,
-    msg: *const CMessage => Message
+    msg: *const CMessage => Message,
+    is_sync: bool => bool
 );
 
 impl CallbackTranslator<*const c_char> for String {

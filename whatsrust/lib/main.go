@@ -79,13 +79,13 @@ static void callQrCallback(QrCallback cb, const char* code, void* user_data) {
 	cb(code, user_data);
 }
 
-typedef void (*MessageHandlerCallback)(const Message*, void*);
+typedef void (*MessageHandlerCallback)(const Message*, bool, void*);
 typedef struct {
 	MessageHandlerCallback callback;
 	void* user_data;
 } MessageHandler;
-static void callMessageHandler(MessageHandler hdl, const Message* data) {
-    hdl.callback(data, hdl.user_data);
+static void callMessageHandler(MessageHandler hdl, bool isSync, const Message* data) {
+    hdl.callback(data, isSync, hdl.user_data);
 }
 
 typedef void (*HistorySyncCallback)(uint32_t, void*);
@@ -176,7 +176,8 @@ func (l *WrLogger) Sub(module string) waLog.Logger {
 
 // Convert Go JID to C JID
 func jidToC(jid types.JID) C.JID {
-	return C.CString(jid.User + "@" + jid.Server)
+	return C.CString(jid.ToNonAD().String())
+	// return C.CString(jid.User + "@" + jid.Server)
 }
 
 // Convert C JID to Go JID
@@ -359,7 +360,7 @@ func CMessageToWaE2EMessage(cmsg *C.Message) (types.MessageInfo, *waE2E.Message)
 	// }
 }
 
-func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
+func HandleMessage(info types.MessageInfo, msg *waE2E.Message, isSync bool) {
 	chat := info.Chat
 	sender := info.Sender
 	timestamp := info.Timestamp.Unix()
@@ -389,7 +390,7 @@ func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
 			message:     unsafe.Pointer(content),
 		}
 
-		C.callMessageHandler(messageHandler, &message)
+		C.callMessageHandler(messageHandler, C.bool(isSync), &message)
 	}
 	if msg.ExtendedTextMessage != nil {
 		ext_msg := msg.GetExtendedTextMessage()
@@ -416,7 +417,7 @@ func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
 			messageType: C.uint8_t(MessageTypeText),
 			message:     unsafe.Pointer(content),
 		}
-		C.callMessageHandler(messageHandler, &message)
+		C.callMessageHandler(messageHandler, C.bool(isSync), &message)
 	}
 	if msg.ImageMessage != nil {
 		img := msg.GetImageMessage()
@@ -464,7 +465,7 @@ func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
 			messageType: C.uint8_t(MessageTypeFile),
 			message:     unsafe.Pointer(content),
 		}
-		C.callMessageHandler(messageHandler, &message)
+		C.callMessageHandler(messageHandler, C.bool(isSync), &message)
 	}
 	if msg.VideoMessage != nil {
 		vid := msg.GetVideoMessage()
@@ -509,7 +510,7 @@ func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
 			messageType: C.uint8_t(MessageTypeFile),
 			message:     unsafe.Pointer(content),
 		}
-		C.callMessageHandler(messageHandler, &message)
+		C.callMessageHandler(messageHandler, C.bool(isSync), &message)
 	}
 	if msg.AudioMessage != nil {
 		audio := msg.GetAudioMessage()
@@ -548,7 +549,7 @@ func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
 			messageType: C.uint8_t(MessageTypeFile),
 			message:     unsafe.Pointer(content),
 		}
-		C.callMessageHandler(messageHandler, &message)
+		C.callMessageHandler(messageHandler, C.bool(isSync), &message)
 	}
 	if msg.DocumentMessage != nil {
 		doc := msg.GetDocumentMessage()
@@ -593,7 +594,7 @@ func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
 			messageType: C.uint8_t(MessageTypeFile),
 			message:     unsafe.Pointer(content),
 		}
-		C.callMessageHandler(messageHandler, &message)
+		C.callMessageHandler(messageHandler, C.bool(isSync), &message)
 	}
 	if msg.StickerMessage != nil {
 		sticker := msg.GetStickerMessage()
@@ -632,7 +633,7 @@ func HandleMessage(info types.MessageInfo, msg *waE2E.Message) {
 			messageType: C.uint8_t(MessageTypeFile),
 			message:     unsafe.Pointer(content),
 		}
-		C.callMessageHandler(messageHandler, &message)
+		C.callMessageHandler(messageHandler, C.bool(isSync), &message)
 	}
 }
 
@@ -657,24 +658,15 @@ func AddEventHandlers() {
 					data: nil,
 				}
 				C.callEventCallback(eventHandler, &cevent)
-
-				// if StateSyncCompleteHandler.callback != nil {
-				// 	C.callStateSyncComplete(StateSyncCompleteHandler)
-				// }
 			}
 
 		case *events.Message:
-			HandleMessage(evt.Info, evt.Message)
+			HandleMessage(evt.Info, evt.Message, false)
 
 		case *events.Receipt:
+			// LOG_INFO("Receipt: %s %s %s", evt.Type, evt.MessageIDs, evt.SourceString())
 			if evt.Type == types.ReceiptTypeRead || evt.Type == types.ReceiptTypeReadSelf {
 				LOG_INFO("%#v was read by %s at %s", evt.MessageIDs, evt.SourceString(), evt.Timestamp)
-				// chatId := evt.MessageSource.Chat.ToNonAD().String()
-				// isRead := true
-				// for _, msgId := range evt.MessageIDs {
-				// LOG_TRACE(fmt.Sprintf("Call CWmNewMessageStatusNotify"))
-				// CWmNewMessageStatusNotify(connId, chatId, msgId, BoolToInt(isRead))
-				// }
 			}
 
 		case *events.HistorySync:
@@ -707,7 +699,7 @@ func AddEventHandlers() {
 						continue
 					}
 
-					HandleMessage(*messageInfo, message)
+					HandleMessage(*messageInfo, message, true)
 				}
 			}
 		}
@@ -786,7 +778,8 @@ func C_SendMessage(cjid C.JID, ctext *C.char, quoted_msg *C.Message) {
 		messageInfo.ID = sendResponse.ID
 		messageInfo.Timestamp = sendResponse.Timestamp
 
-		HandleMessage(messageInfo, &message)
+		LOG_INFO("Message sent: %s %s", messageInfo.ID, messageInfo.Chat)
+		HandleMessage(messageInfo, &message, false)
 	}
 }
 

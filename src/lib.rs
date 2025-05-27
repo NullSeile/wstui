@@ -9,7 +9,7 @@ pub mod ui;
 pub mod vim;
 
 use db::DatabaseHandler;
-use log::info;
+use log::{error, info};
 use message_list::MessageListState;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::widgets::Block;
@@ -50,12 +50,6 @@ impl Chat {
     }
 }
 
-pub type ChatList = HashMap<wr::JID, Chat>;
-
-pub type ChatMessages = HashMap<wr::MessageId, wr::Message>;
-
-pub type MessagesStorage = HashMap<wr::JID, ChatMessages>;
-
 pub enum FileMeta {
     Downloaded,
     DownloadFailed,
@@ -66,17 +60,13 @@ pub enum Metadata {
     File(FileMeta),
 }
 
-pub type MetadataStorage = HashMap<wr::MessageId, Metadata>;
-
 pub enum AppEvent {
-    // StateSyncComplete,
     DownloadFile(wr::MessageId, wr::FileId),
     SetFileState(wr::MessageId, FileMeta),
-    // HistoryPercent(u8),
 }
 
 pub enum AppInput {
-    Noop,
+    Draw,
     App(AppEvent),
     Message(wr::Message),
     WhatsApp(wr::Event),
@@ -94,8 +84,10 @@ pub struct App<'a> {
     pub db_handler: DatabaseHandler,
     pub media_path: &'a Path,
 
-    pub messages: MessagesStorage,
-    pub chats: ChatList,
+    pub messages: HashMap<wr::MessageId, wr::Message>,
+    pub chats: HashMap<wr::JID, Chat>,
+    pub chat_messages: HashMap<wr::JID, Vec<wr::MessageId>>,
+
     pub sorted_chats: Vec<Chat>,
     pub selected_chat_jid: Option<wr::JID>,
     pub selected_chat_index: Option<usize>,
@@ -104,7 +96,7 @@ pub struct App<'a> {
 
     pub quoting_message: Option<wr::Message>,
     pub message_list_state: MessageListState,
-    pub metadata: MetadataStorage,
+    pub metadata: HashMap<wr::MessageId, Metadata>,
     pub image_cache: HashMap<Arc<str>, StatefulProtocol>,
     pub picker: Picker,
 
@@ -136,13 +128,14 @@ impl Default for App<'_> {
         Self {
             db_handler: DatabaseHandler::new("whatsapp.db"),
             media_path: Path::new("media"),
-            messages: MessagesStorage::new(),
-            chats: ChatList::new(),
+            messages: HashMap::new(),
+            chats: HashMap::new(),
+            chat_messages: HashMap::new(),
             sorted_chats: Vec::new(),
             selected_chat_jid: None,
             selected_chat_index: None,
             message_list_state: MessageListState::default(),
-            metadata: MetadataStorage::new(),
+            metadata: HashMap::new(),
             history_sync_percent: None,
             image_cache: HashMap::new(),
             quoting_message: None,
@@ -175,7 +168,7 @@ impl App<'_> {
                     _ => log::Level::Trace,
                 };
                 log::log!(level, "{msg}");
-                tx.send(AppInput::Noop).unwrap();
+                tx.send(AppInput::Draw).unwrap();
             });
         }
         {
@@ -186,8 +179,11 @@ impl App<'_> {
         }
         {
             let tx = self.tx.clone();
-            wr::set_message_handler(move |message| {
+            wr::set_message_handler(move |message, is_sync| {
                 tx.send(AppInput::Message(message)).unwrap();
+                if !is_sync {
+                    tx.send(AppInput::Draw).unwrap();
+                }
             });
         }
 
@@ -216,14 +212,16 @@ impl App<'_> {
             });
         }
 
-        loop {
-            terminal.draw(|frame| ui::draw(frame, self)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, self)).unwrap();
 
-            match self.rx.recv() {
+        loop {
+            let should_draw = match self.rx.recv() {
                 Ok(AppInput::App(event)) => match event {
                     AppEvent::SetFileState(message_id, state) => {
                         self.metadata
                             .insert(message_id.clone(), Metadata::File(state));
+
+                        true
                     }
                     AppEvent::DownloadFile(message_id, file_id) => {
                         let state = match wr::download_file(&file_id, self.media_path) {
@@ -233,15 +231,20 @@ impl App<'_> {
 
                         self.metadata
                             .insert(message_id.clone(), Metadata::File(state));
+
+                        true
                     }
                 },
                 Ok(AppInput::WhatsApp(event)) => match event {
                     wr::Event::AppStateSyncComplete => {
                         self.get_contacts();
                         self.sort_chats();
+
+                        true
                     }
                     wr::Event::SyncProgress(percent) => {
                         self.history_sync_percent = Some(percent);
+                        true
                     }
                 },
                 Ok(AppInput::Message(msg)) => {
@@ -255,12 +258,22 @@ impl App<'_> {
                             .iter()
                             .position(|chat| &chat.jid == current_jid);
                     }
+
+                    false // We will redraw manually
                 }
                 Ok(AppInput::Terminal(event)) => {
                     self.on_event(event);
+                    true
                 }
-                Ok(AppInput::Noop) => {}
-                Err(_) => {}
+                Ok(AppInput::Draw) => true,
+                Err(_) => {
+                    error!("Failed to receive input from channel");
+                    true
+                }
+            };
+
+            if should_draw {
+                terminal.draw(|frame| ui::draw(frame, self)).unwrap();
             }
 
             if self.should_quit {
@@ -411,6 +424,7 @@ impl App<'_> {
                             self.selected_chat_index = Some(0);
                             self.selected_chat_jid = Some(self.sorted_chats[0].jid.clone());
                         }
+                        self.sort_chat_messages(self.selected_chat_jid.as_ref().unwrap().clone());
                         self.message_list_state.reset();
                     }
                     KeyCode::Enter => {
@@ -446,19 +460,8 @@ impl App<'_> {
                         self.message_list_state.select_next();
                     }
                     KeyCode::Char('r') => {
-                        // if key.modifiers == KeyModifiers::CONTROL {
-                        //     self.quoting_message = None;
-                        //     return;
-                        // }
-                        if let (Some(chat_jid), Some(msg_id)) = (
-                            self.selected_chat_jid.clone(),
-                            &self.message_list_state.selected_message,
-                        ) {
-                            if let Some(msg) = self
-                                .messages
-                                .get(&chat_jid)
-                                .and_then(|msgs| msgs.get(msg_id))
-                            {
+                        if let Some(msg_id) = &self.message_list_state.selected_message {
+                            if let Some(msg) = self.messages.get(msg_id) {
                                 self.quoting_message = Some(msg.clone());
                                 self.selected_widget = SelectedWidget::Input;
                             }
@@ -493,10 +496,22 @@ impl App<'_> {
             },
         );
 
-        self.messages
-            .entry(chat_jid)
-            .or_default()
-            .insert(message.info.id.clone(), message);
+        let id = message.info.id.clone();
+
+        // Insert the message into the messages map, if it's aleardy present,
+        // updated if the message is newer.
+        if let Some(existing_message) = self.messages.get_mut(&id) {
+            if existing_message.info.timestamp < message.info.timestamp {
+                *existing_message = message;
+                self.sort_chat_messages(chat_jid.clone());
+            }
+        } else {
+            self.messages.insert(id.clone(), message);
+            self.chat_messages
+                .entry(chat_jid.clone())
+                .or_default()
+                .push(id);
+        }
     }
 
     fn add_or_update_chat<F: FnOnce(&mut Chat)>(&mut self, chat: Chat, callback: F) {
@@ -547,5 +562,11 @@ impl App<'_> {
             b_time.cmp(&a_time)
         });
         self.sorted_chats = entries;
+    }
+
+    fn sort_chat_messages(&mut self, chat_jid: wr::JID) {
+        if let Some(messages) = self.chat_messages.get_mut(&chat_jid) {
+            messages.sort_by_cached_key(|msg_id| self.messages.get(msg_id).unwrap().info.timestamp);
+        }
     }
 }

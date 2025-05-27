@@ -15,7 +15,6 @@ use whatsrust as wr;
 pub fn draw(frame: &mut Frame, app: &mut App) {
     if let SelectedWidget::MessageView = app.selected_widget {
         let msg_id = app.message_list_state.selected_message.clone().unwrap();
-        let chat_id = app.selected_chat_jid.clone().unwrap();
 
         let block = Block::default()
             .title("Message")
@@ -31,7 +30,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         let area = block.inner(frame.area());
         frame.render_widget(block, frame.area());
 
-        if let Some(msg) = app.messages.get(&chat_id).and_then(|m| m.get(&msg_id)) {
+        if let Some(msg) = app.messages.get(&msg_id) {
             match msg.message {
                 wr::MessageContent::Text(ref text) => {
                     let paragraph = Paragraph::new(text.to_string());
