@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     ffi::{CStr, CString, c_char, c_void},
     path::Path,
     sync::{Arc, Mutex},
@@ -8,7 +7,6 @@ use std::{
 #[macro_use]
 mod callbacks;
 use callbacks::CallbackTranslator;
-use log::info;
 use strum::{EnumIter, FromRepr};
 
 type CJID = *const c_char;
@@ -48,10 +46,15 @@ struct CContact {
 }
 
 #[repr(C)]
-struct CContactsMapResult {
-    jids: *const CJID,
-    contacts: *const CContact,
-    count: u32,
+struct CContactEntry {
+    jid: CJID,
+    name: *const c_char,
+}
+
+#[repr(C)]
+struct CGetContactsResult {
+    entries: *const CContactEntry,
+    size: u32,
 }
 
 #[repr(C)]
@@ -63,18 +66,6 @@ struct CMessageInfo {
     is_from_me: bool,
     quote_id: *const c_char,
     read_by: u16,
-}
-
-#[repr(C)]
-struct CGroupInfo {
-    jid: CJID,
-    name: *const c_char,
-}
-
-#[repr(C)]
-struct CGetGroupInfoResult {
-    groups: *const CGroupInfo,
-    count: u32,
 }
 
 #[repr(C)]
@@ -236,8 +227,7 @@ unsafe extern "C" {
     fn C_NewClient(db_path: *const c_char);
     fn C_Connect(qr_cb: CQrCallback, data: *mut c_void);
     fn C_SendMessage(jid: CJID, message: *const c_char, quoted_message: *const CMessageInfo);
-    fn C_GetAllContacts() -> CContactsMapResult;
-    fn C_GetJoinedGroups() -> CGetGroupInfoResult;
+    fn C_GetContacts() -> CGetContactsResult;
     fn C_Disconnect();
     fn C_PairPhone(phone: *const c_char) -> *const c_char;
     fn C_DownloadFile(file_id: *const c_char, base_path: *const c_char) -> u8;
@@ -463,37 +453,20 @@ pub fn send_message(jid: &JID, message: &str, quoted_message: Option<&Message>) 
     }
 }
 
-pub fn get_joined_groups() -> Vec<GroupInfo> {
-    let result = unsafe { C_GetJoinedGroups() };
-    let groups = unsafe { std::slice::from_raw_parts(result.groups, result.count as usize) };
+/// Returns all contacts and groups as (JID, display name). Includes LID aliases for contacts.
+pub fn get_contacts() -> Vec<(JID, Arc<str>)> {
+    let result = unsafe { C_GetContacts() };
+    let entries = unsafe { std::slice::from_raw_parts(result.entries, result.size as usize) };
 
-    groups
+    entries
         .iter()
-        .map(|group| {
-            let jid: JID = (&group.jid).into();
-            let name = unsafe { CStr::from_ptr(group.name) }
+        .map(|e| {
+            let jid: JID = (&e.jid).into();
+            let name = unsafe { CStr::from_ptr(e.name) }
                 .to_string_lossy()
                 .into_owned()
                 .into();
-            GroupInfo { jid, name }
+            (jid, name)
         })
         .collect()
-}
-
-pub fn get_all_contacts() -> HashMap<JID, Contact> {
-    let result = unsafe { C_GetAllContacts() };
-
-    let jids = unsafe { std::slice::from_raw_parts(result.jids, result.count as usize) };
-    let contacts = unsafe { std::slice::from_raw_parts(result.contacts, result.count as usize) };
-
-    let contacts_map: HashMap<JID, Contact> = jids
-        .iter()
-        .zip(contacts.iter())
-        .map(|(jid, contact)| {
-            let jid = JID::from(jid);
-            let contact = Contact::from(contact);
-            (jid, contact)
-        })
-        .collect();
-    contacts_map
 }

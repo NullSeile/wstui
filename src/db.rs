@@ -44,12 +44,10 @@ impl DatabaseHandler {
                     let tx = db.transaction().unwrap();
                     {
                         let mut statement = tx
-                            .prepare("INSERT OR REPLACE INTO chats (jid, name) VALUES (?, ?)")
+                            .prepare("INSERT OR REPLACE INTO chats (jid) VALUES (?)")
                             .unwrap();
                         for chat in new_chats {
-                            statement
-                                .execute(rusqlite::params![chat.jid.0, chat.name])
-                                .unwrap();
+                            statement.execute(rusqlite::params![&*chat.jid.0]).unwrap();
                         }
                     }
                     tx.commit().unwrap();
@@ -150,24 +148,18 @@ impl DatabaseHandler {
     }
 
     pub fn get_chats(&self) -> Vec<Chat> {
-        let chats = {
-            let mut query = self.db.prepare("SELECT * FROM chats").unwrap();
-            query
-                .query_map([], |row| {
-                    let jid: String = row.get(0).unwrap();
-                    let name: Option<String> = row.get(1).unwrap_or(None);
-
-                    Ok(Chat {
-                        jid: jid.into(),
-                        name: name.map(|n| n.into()),
-                        last_message_time: None,
-                    })
+        let mut query = self.db.prepare("SELECT jid FROM chats").unwrap();
+        query
+            .query_map([], |row| {
+                let jid: String = row.get(0).unwrap();
+                Ok(Chat {
+                    jid: jid.into(),
+                    last_message_time: None,
                 })
-                .unwrap()
-                .collect::<Result<Vec<_>, _>>()
-                .unwrap()
-        };
-        chats
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
     }
 
     pub fn get_messages(&self) -> Vec<wr::Message> {
@@ -252,12 +244,42 @@ impl DatabaseHandler {
         messages
     }
 
+    pub fn add_contact(&self, jid: &wr::JID, name: &str) {
+        self.db
+            .execute(
+                "INSERT OR REPLACE INTO contacts (jid, name) VALUES (?1, ?2)",
+                rusqlite::params![&*jid.0, name],
+            )
+            .unwrap();
+    }
+
+    pub fn get_contacts(&self) -> Vec<(wr::JID, Arc<str>)> {
+        let mut stmt = self.db.prepare("SELECT jid, name FROM contacts").unwrap();
+        let rows = stmt
+            .query_map([], |row| {
+                let jid: String = row.get(0).unwrap();
+                let name: String = row.get(1).unwrap();
+                Ok((jid.into(), Arc::from(name)))
+            })
+            .unwrap();
+        rows.map(|r| r.unwrap()).collect()
+    }
+
     pub fn init(&self) {
         self.db
             .execute(
                 "CREATE TABLE IF NOT EXISTS chats (
+                    jid TEXT PRIMARY KEY
+                )",
+                [],
+            )
+            .unwrap();
+
+        self.db
+            .execute(
+                "CREATE TABLE IF NOT EXISTS contacts (
                     jid TEXT PRIMARY KEY,
-                    name TEXT
+                    name TEXT NOT NULL
                 )",
                 [],
             )

@@ -17,20 +17,14 @@ typedef struct {
 } Contact;
 
 typedef struct {
-	JID* jids;
-	Contact* contacts;
-	uint32_t size;
-} ContactsMapResult;
-
-typedef struct {
 	JID jid;
 	const char* name;
-} GroupInfo;
+} ContactEntry;
 
 typedef struct {
-	GroupInfo* groups;
+	ContactEntry* entries;
 	uint32_t size;
-} GetJoinedGroupsResult;
+} GetContactsResult;
 
 typedef struct {
 	char* id;
@@ -180,6 +174,64 @@ func (l *WrLogger) Sub(module string) waLog.Logger {
 	return &WrLogger{}
 }
 
+// GetSelfId returns the current user's JID string for comparison (e.g. broadcast sender).
+func GetSelfId(client *whatsmeow.Client) string {
+	if client == nil || client.Store == nil || client.Store.ID == nil {
+		return ""
+	}
+	return StrFromJid(*client.Store.ID)
+}
+
+// GetChatId returns the normalized chat id (conversation key): LID→PN, broadcast→per-sender, status as-is.
+func GetChatId(client *whatsmeow.Client, chatJid *types.JID, senderJid *types.JID) string {
+	if chatJid == nil {
+		LOG_WARN("chatJid is nil")
+		return ""
+	}
+	if chatJid.Server == types.BroadcastServer && chatJid.User == "status" {
+		return StrFromJid(*chatJid)
+	}
+	if chatJid.Server == types.BroadcastServer && chatJid.User != "status" {
+		if senderJid != nil {
+			userId := GetUserId(client, nil, senderJid)
+			if userId == GetSelfId(client) {
+				return StrFromJid(*chatJid)
+			}
+			return userId
+		}
+	}
+	if chatJid.Server == types.HiddenUserServer {
+		ctx := context.Background()
+		if pChatJid, _ := client.Store.LIDs.GetPNForLID(ctx, *chatJid); !pChatJid.IsEmpty() {
+			return StrFromJid(pChatJid)
+		}
+	}
+	return StrFromJid(*chatJid)
+}
+
+// GetUserId returns the normalized user/sender id: LID→PN when known; in groups use sender as-is (like nchat).
+func GetUserId(client *whatsmeow.Client, chatJid *types.JID, userJid *types.JID) string {
+	if userJid == nil {
+		LOG_WARN("userJid is nil")
+		return ""
+	}
+	if chatJid != nil && chatJid.Server == types.GroupServer {
+		return StrFromJid(*userJid)
+	}
+	if userJid.Server == types.HiddenUserServer {
+		ctx := context.Background()
+		if pUserJid, _ := client.Store.LIDs.GetPNForLID(ctx, *userJid); !pUserJid.IsEmpty() {
+			return StrFromJid(pUserJid)
+		}
+	}
+	return StrFromJid(*userJid)
+}
+
+// Convert Jid to string without any mapping, use with care!
+func StrFromJid(jid types.JID) string {
+	return jid.User + "@" + jid.Server
+}
+
 // Convert Go JID to C JID
 func jidToC(jid types.JID) C.JID {
 	return C.CString(jid.ToNonAD().String())
@@ -195,15 +247,21 @@ func cToJid(cjid C.JID) types.JID {
 	return jid
 }
 
-// Convert Go ContactInfo to C Contact
-func contactToC(contact types.ContactInfo) C.Contact {
-	return C.Contact{
-		found:         C.bool(contact.Found),
-		first_name:    C.CString(contact.FirstName),
-		full_name:     C.CString(contact.FullName),
-		push_name:     C.CString(contact.PushName),
-		business_name: C.CString(contact.BusinessName),
+// contactDisplayName returns the display name for a contact (same order as Rust get_contact_name).
+func contactDisplayName(c types.ContactInfo) string {
+	if c.FullName != "" {
+		return c.FullName
 	}
+	if c.FirstName != "" {
+		return c.FirstName
+	}
+	if c.PushName != "" {
+		return "~ " + c.PushName
+	}
+	if c.BusinessName != "" {
+		return "+ " + c.BusinessName
+	}
+	return ""
 }
 
 //export C_SetLogHandler
@@ -368,6 +426,18 @@ func CMessageToWaE2EMessage(cmsg *C.Message) (types.MessageInfo, *waE2E.Message)
 }
 
 func HandleMessage(info types.MessageInfo, msg *waE2E.Message, isSync bool) {
+	// Normalize chat and sender ids (LID→PN, broadcast→per-sender) so Rust sees canonical ids.
+	if normalizedChat := GetChatId(client, &info.Chat, &info.Sender); normalizedChat != "" {
+		if jid, err := types.ParseJID(normalizedChat); err == nil {
+			info.Chat = jid
+		}
+	}
+	if normalizedSender := GetUserId(client, &info.Chat, &info.Sender); normalizedSender != "" {
+		if jid, err := types.ParseJID(normalizedSender); err == nil {
+			info.Sender = jid
+		}
+	}
+
 	chat := info.Chat
 	sender := info.Sender
 	timestamp := info.Timestamp.Unix()
@@ -819,60 +889,53 @@ func C_SendMessage(cjid C.JID, ctext *C.char, quoted_msg *C.Message) {
 
 // TODO: Free the memory allocated for C.JID and C.Contact
 
-//export C_GetJoinedGroups
-func C_GetJoinedGroups() C.GetJoinedGroupsResult {
-	groups, err := client.GetJoinedGroups(context.Background())
+//export C_GetContacts
+func C_GetContacts() C.GetContactsResult {
+	ctx := context.Background()
+	var entries []C.ContactEntry
+
+	// Contacts (with LID aliases so group senders keyed by LID resolve to a name).
+	contacts, err := client.Store.Contacts.GetAllContacts(ctx)
 	if err != nil {
 		panic(err)
 	}
+	for jid, contact := range contacts {
+		name := contactDisplayName(contact)
+		if name == "" {
+			continue
+		}
+		cName := C.CString(name)
+		entries = append(entries, C.ContactEntry{jid: jidToC(jid), name: cName})
+		if jid.Server != types.HiddenUserServer {
+			if lid, _ := client.Store.LIDs.GetLIDForPN(ctx, jid); !lid.IsEmpty() {
+				entries = append(entries, C.ContactEntry{jid: jidToC(lid), name: cName})
+			}
+		}
+	}
 
-	n := len(groups)
-	c_groups := C.malloc(C.size_t(n) * C.size_t(unsafe.Sizeof(C.GroupInfo{})))
-	groupList := unsafe.Slice((*C.GroupInfo)(c_groups), n)
-
-	i := 0
+	// Groups.
+	groups, err := client.GetJoinedGroups(ctx)
+	if err != nil {
+		panic(err)
+	}
 	for _, group := range groups {
-		groupList[i] = C.GroupInfo{
+		entries = append(entries, C.ContactEntry{
 			jid:  jidToC(group.JID),
 			name: C.CString(group.GroupName.Name),
-		}
-		i++
+		})
 	}
 
-	result := C.GetJoinedGroupsResult{
-		groups: (*C.GroupInfo)(c_groups),
-		size:   C.uint32_t(n),
-	}
-	return result
-}
-
-//export C_GetAllContacts
-func C_GetAllContacts() C.ContactsMapResult {
-	contacts, err := client.Store.Contacts.GetAllContacts(context.Background())
-	if err != nil {
-		panic(err)
+	n := len(entries)
+	c_entries := C.malloc(C.size_t(n) * C.size_t(unsafe.Sizeof(C.ContactEntry{})))
+	entryList := unsafe.Slice((*C.ContactEntry)(c_entries), n)
+	for i := range n {
+		entryList[i] = entries[i]
 	}
 
-	n := len(contacts)
-	c_jids := C.malloc(C.size_t(n) * C.size_t(C.sizeof_JID))
-	c_contacts := C.malloc(C.size_t(n) * C.size_t(C.sizeof_Contact))
-
-	jidsList := unsafe.Slice((*C.JID)(c_jids), n)
-	contactList := unsafe.Slice((*C.Contact)(c_contacts), n)
-
-	i := 0
-	for jid, contact := range contacts {
-		jidsList[i] = jidToC(jid)
-		contactList[i] = contactToC(contact)
-		i++
+	return C.GetContactsResult{
+		entries: (*C.ContactEntry)(c_entries),
+		size:    C.uint32_t(n),
 	}
-
-	result := C.ContactsMapResult{
-		jids:     (*C.JID)(c_jids),
-		contacts: (*C.Contact)(c_contacts),
-		size:     C.uint32_t(n),
-	}
-	return result
 }
 
 //export C_Disconnect

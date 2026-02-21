@@ -2,11 +2,12 @@ use crate::{
     App, SelectedWidget,
     message_list::{get_quoted_text, render_messages},
 };
+use log::info;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
     style::{Style, Stylize},
-    widgets::{Block, Borders, List, ListState, Paragraph},
+    widgets::{Block, Borders, List, Paragraph},
 };
 use ratatui_image::{Resize, StatefulImage};
 use tui_logger::TuiLoggerWidget;
@@ -38,15 +39,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 }
                 wr::MessageContent::File(ref file) => match file.kind {
                     wr::FileKind::Image | wr::FileKind::Sticker => {
-                        let paragraph = Paragraph::new("Image not supported yet");
-                        frame.render_widget(paragraph, area);
-                        // if let Some(image) = app.image_cache.get_mut(&file.path) {
-                        //     frame.render_stateful_widget(
-                        //         StatefulImage::default().resize(Resize::Scale(None)),
-                        //         area,
-                        //         image,
-                        //     );
-                        // }
+                        if let Some(image) = app.image_cache.get_mut(&file.path) {
+                            info!("Rendering image from cache: {}", file.path);
+                            frame.render_stateful_widget(
+                                StatefulImage::default().resize(Resize::Scale(None)),
+                                area,
+                                image,
+                            );
+                        }
                     }
                     wr::FileKind::Video => {
                         let paragraph = Paragraph::new("Video not supported yet");
@@ -67,16 +67,25 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
-    let [contacts_area, chat_area, logs_area] = Layout::horizontal([
-        Constraint::Min(30),
-        Constraint::Percentage(50),
-        Constraint::Percentage(50),
-    ])
-    .areas(frame.area());
+    if app.show_logs {
+        let [contacts_area, chat_area, logs_area] = Layout::horizontal([
+            Constraint::Min(30),
+            Constraint::Percentage(50),
+            Constraint::Percentage(50),
+        ])
+        .areas(frame.area());
 
-    render_logs(frame, logs_area);
-    render_contacts(frame, app, contacts_area);
-    render_chats(frame, app, chat_area);
+        render_logs(frame, logs_area);
+        render_contacts(frame, app, contacts_area);
+        render_chats(frame, app, chat_area);
+    } else {
+        let [contacts_area, chat_area] =
+            Layout::horizontal([Constraint::Min(30), Constraint::Percentage(100)])
+                .areas(frame.area());
+
+        render_contacts(frame, app, contacts_area);
+        render_chats(frame, app, chat_area);
+    }
 }
 
 fn render_logs(frame: &mut Frame, area: Rect) {
@@ -89,10 +98,8 @@ fn render_contacts(frame: &mut Frame, app: &mut App, area: Rect) {
     let items = app
         .sorted_chats
         .iter()
-        .map(|entry| entry.get_name().to_string())
+        .map(|chat| app.contact_name(&chat.jid).to_string())
         .collect::<Vec<_>>();
-
-    // let mut list_state = ListState::default().with_selected(app.selected_chat_index);
 
     let list = List::new(items)
         .block(
@@ -111,8 +118,8 @@ fn render_contacts(frame: &mut Frame, app: &mut App, area: Rect) {
                 )),
         )
         .highlight_style(ratatui::style::Style::default().fg(ratatui::style::Color::Green));
+
     frame.render_stateful_widget(list, area, &mut app.chat_list_state);
-    // frame.render_stateful_widget(list, area, &mut list_state);
 }
 
 pub fn render_chats(frame: &mut Frame, app: &mut App, area: Rect) {

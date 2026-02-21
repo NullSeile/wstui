@@ -2,7 +2,7 @@ use core::fmt;
 use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, sync::Mutex};
 
 pub mod db;
 pub mod message_list;
@@ -16,22 +16,12 @@ use message_list::{IMAGE_HEIGHT, IMAGE_WIDTH};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, ListState};
-use ratatui_image::Resize;
-use ratatui_image::picker::Picker;
-use ratatui_image::protocol::{Protocol, StatefulProtocol};
+use ratatui_image::picker::{Picker, ProtocolType};
+use ratatui_image::protocol::StatefulProtocol;
+use ratatui_image::{Resize, ResizeEncodeRender};
 use tui_textarea::TextArea;
 use vim::Vim;
 use whatsrust as wr;
-
-// use crate::message_list::IMAGE_HEIGHT;
-
-// if let Some(type) = match evt.Type {
-//     Read | ReadSelf => Some("Read"),
-//     Received => Some("Received"),
-//     _ => None,
-// } {
-//
-// }
 
 pub fn get_contact_name(contact: &wr::Contact) -> Option<Arc<str>> {
     if !contact.full_name.is_empty() {
@@ -50,18 +40,7 @@ pub fn get_contact_name(contact: &wr::Contact) -> Option<Arc<str>> {
 #[derive(Clone, Debug)]
 pub struct Chat {
     pub jid: wr::JID,
-    pub name: Option<Arc<str>>,
     pub last_message_time: Option<i64>,
-}
-
-impl Chat {
-    pub fn get_name(&self) -> Arc<str> {
-        if let Some(name) = &self.name {
-            name.clone()
-        } else {
-            self.jid.clone().into()
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -82,7 +61,7 @@ pub enum AppEvent {
     DownloadFile(wr::MessageId, wr::FileId),
     DownloadFileDone(wr::MessageId, FileMeta),
     LoadFilePreview(wr::MessageId),
-    SetFilePreview(wr::MessageId, Arc<str>, Protocol),
+    SetFilePreview(wr::MessageId, Arc<str>, StatefulProtocol),
     SetFileState(wr::MessageId, FileMeta),
 }
 
@@ -138,11 +117,14 @@ pub struct App<'a> {
 
     pub messages: HashMap<wr::MessageId, wr::Message>,
     pub chats: HashMap<wr::JID, Chat>,
+
+    // Maps JID to display name
+    pub contacts: HashMap<wr::JID, Arc<str>>,
+
     pub chat_messages: HashMap<wr::JID, Vec<wr::MessageId>>,
 
     pub sorted_chats: Vec<Chat>,
     pub selected_chat_jid: Option<wr::JID>,
-    // pub selected_chat_index: Option<usize>,
     pub chat_list_state: ListState,
 
     pub history_sync_percent: Option<u8>,
@@ -150,10 +132,13 @@ pub struct App<'a> {
     pub quoting_message: Option<wr::Message>,
     pub message_list_state: MessageListState,
     pub metadata: HashMap<wr::MessageId, Metadata>,
-    pub image_cache: HashMap<Arc<str>, Protocol>,
-    pub picker: Arc<Picker>,
+    pub image_cache: HashMap<Arc<str>, StatefulProtocol>,
+    pub default_protocol_type: ProtocolType,
+    pub picker: Arc<Mutex<Picker>>,
 
     pub selected_widget: SelectedWidget,
+
+    pub show_logs: bool,
 
     pub vim: Vim,
     pub input_widget: TextArea<'a>,
@@ -173,8 +158,8 @@ impl Default for App<'_> {
         // input_widget.set_block(vim::Mode::Normal.block());
         input_widget.set_placeholder_text("Type a message...");
 
-        let mut picker = Picker::from_query_stdio().unwrap();
-        picker.set_protocol_type(ratatui_image::picker::ProtocolType::Halfblocks);
+        let picker = Picker::from_query_stdio().unwrap();
+        let default_protocol_type = picker.protocol_type();
 
         let (tx, rx) = mpsc::channel::<AppInput>();
 
@@ -183,20 +168,22 @@ impl Default for App<'_> {
             media_path: Path::new("media"),
             messages: HashMap::new(),
             chats: HashMap::new(),
+            contacts: HashMap::new(),
             chat_messages: HashMap::new(),
 
             sorted_chats: Vec::new(),
             selected_chat_jid: None,
-            // selected_chat_index: None,
             chat_list_state: ListState::default(),
 
             message_list_state: MessageListState::default(),
             metadata: HashMap::new(),
             history_sync_percent: None,
             image_cache: HashMap::new(),
+            default_protocol_type,
             quoting_message: None,
-            picker: Arc::new(picker),
+            picker: Arc::new(Mutex::new(picker)),
             selected_widget: SelectedWidget::ChatList,
+            show_logs: false,
             vim: Vim::new(vim::Mode::Insert),
             input_border: vim::Mode::Insert.block(),
             input_widget,
@@ -211,7 +198,7 @@ impl App<'_> {
     pub fn run(&mut self, phone: Option<String>) {
         self.db_init();
 
-        let ws_database_path = "examplestore.db";
+        let ws_database_path = "whatsmeow_store.db";
 
         {
             let tx = self.tx.clone();
@@ -243,9 +230,9 @@ impl App<'_> {
             });
         }
 
-        info!("Starting WhatsRust...");
-
+        info!("Starting WhatsRust Client...");
         wr::new_client(ws_database_path);
+        info!("WhatsRust Client started");
 
         // thread::spawn(|| {
         wr::connect(move |data| {
@@ -264,7 +251,10 @@ impl App<'_> {
             thread::spawn(move || {
                 loop {
                     if let Ok(event) = event::read() {
-                        tx.send(AppInput::Terminal(event)).unwrap();
+                        if let Err(e) = tx.send(AppInput::Terminal(event)) {
+                            error!("Failed to send terminal event: {:?}", e);
+                            break;
+                        }
                     }
                 }
             });
@@ -316,47 +306,18 @@ impl App<'_> {
                                 .unwrap()
                                 .decode();
 
-                            // image_res
-                            //     .map(|image_src| {
-                            //         picker.new_protocol(
-                            //             image_src,
-                            //             Rect {
-                            //                 x: 0,
-                            //                 y: 0,
-                            //                 width: IMAGE_WIDTH as u16,
-                            //                 height: IMAGE_HEIGHT as u16,
-                            //             },
-                            //             Resize::Fit(None),
-                            //         )
-                            //     })
-                            //     .map(|img| {
-                            //         tx.send(AppInput::App(AppEvent::SetFilePreview(
-                            //             file.path.clone(),
-                            //             img.unwrap(),
-                            //         )));
-                            //     })
-                            //     .unwrap_or_else(|_| {
-                            //         error!("Failed to load image preview");
-                            //         tx.send(AppInput::App(AppEvent::SetFileState(
-                            //             message_id.clone(),
-                            //             FileMeta::LoadFailed,
-                            //         )))
-                            //         .unwrap();
-                            //     });
-
                             if let Ok(image_src) = image_res {
-                                let img = picker
-                                    .new_protocol(
-                                        image_src,
-                                        Rect {
-                                            x: 0,
-                                            y: 0,
-                                            width: IMAGE_WIDTH as u16,
-                                            height: IMAGE_HEIGHT as u16,
-                                        },
-                                        Resize::Fit(None),
-                                    )
-                                    .unwrap();
+                                let mut img = picker.lock().unwrap().new_resize_protocol(image_src);
+                                img.resize_encode(
+                                    &Resize::Scale(None),
+                                    Rect {
+                                        x: 0,
+                                        y: 0,
+                                        width: IMAGE_WIDTH as u16,
+                                        height: IMAGE_HEIGHT as u16,
+                                    },
+                                );
+
                                 tx.send(AppInput::App(AppEvent::SetFilePreview(
                                     message_id.clone(),
                                     file.path.clone(),
@@ -382,14 +343,6 @@ impl App<'_> {
                     AppEvent::DownloadFile(message_id, file_id) => {
                         let tx = self.tx.clone();
                         let media_path = self.media_path.to_owned();
-                        // let picker = Arc::clone(&self.picker);
-
-                        // let wr::MessageContent::File(file) =
-                        //     self.messages.get(&message_id).unwrap().message.clone()
-                        // else {
-                        //     error!("Expected a file message for download");
-                        //     return;
-                        // };
 
                         if matches!(
                             self.metadata.get(&message_id),
@@ -419,50 +372,6 @@ impl App<'_> {
                                 FileMeta::Downloaded,
                             )))
                             .unwrap();
-
-                            // let state = match wr::download_file(&file_id, &media_path) {
-                            //     Ok(_) => FileMeta::Downloaded,
-                            //     Err(_) => FileMeta::DownloadFailed,
-                            // };
-
-                            // match wr::download_file(&file_id, &media_path) {
-                            //     Ok(_) => match file.kind {
-                            //         wr::FileKind::Image | wr::FileKind::Sticker => {
-                            //             let image = StatefulProtocol::new(
-                            //                 file.path.clone(),
-                            //                 media_path.join(&file.path),
-                            //             );
-                            //             tx.send(AppInput::App(AppEvent::SetFileState(
-                            //                 message_id,
-                            //                 Metadata::File(FileMeta::Loaded),
-                            //             )))
-                            //             .unwrap();
-                            //             tx.send(AppInput::Draw).unwrap();
-                            //             self.image_cache.insert(file.path.clone(), image);
-                            //         }
-                            //         wr::FileKind::Video
-                            //         | wr::FileKind::Audio
-                            //         | wr::FileKind::Document => {
-                            //             tx.send(AppInput::App(AppEvent::SetFileState(
-                            //                 message_id,
-                            //                 FileMeta::Loaded,
-                            //             )))
-                            //             .unwrap();
-                            //         }
-                            //     },
-                            //     Err(_) => {
-                            //         tx.send(AppInput::App(AppEvent::SetFileState(
-                            //             message_id,
-                            //             FileMeta::DownloadFailed,
-                            //         )))
-                            //         .unwrap();
-                            //     }
-                            // };
-
-                            // tx.send(AppInput::App(AppEvent::DownloadFileDone(
-                            //     message_id, state,
-                            // )))
-                            // .unwrap();
                         });
                         false // We will redraw after the download is done
                     }
@@ -506,12 +415,19 @@ impl App<'_> {
                     self.add_message(msg);
 
                     self.sort_chats();
+                    let len = self.sorted_chats.len();
                     if let Some(ref current_jid) = self.selected_chat_jid {
-                        self.chat_list_state.select(
-                            self.sorted_chats
-                                .iter()
-                                .position(|chat| &chat.jid == current_jid),
-                        )
+                        let position = self
+                            .sorted_chats
+                            .iter()
+                            .position(|chat| &chat.jid == current_jid);
+                        self.chat_list_state.select(position);
+                    } else if len > 0 {
+                        // No chat selected; ensure we don't leave a stale out-of-bounds index
+                        let current = self.chat_list_state.selected();
+                        if current.map_or(true, |i| i >= len) {
+                            self.chat_list_state.select(Some(0));
+                        }
                     }
                     false // We will redraw manually
                 }
@@ -546,11 +462,22 @@ impl App<'_> {
         for chat in self.db_handler.get_chats() {
             self.chats.insert(chat.jid.clone(), chat);
         }
+        for (jid, name) in self.db_handler.get_contacts() {
+            self.contacts.insert(jid, name);
+        }
 
         for message in self.db_handler.get_messages() {
             self.add_message(message);
         }
         self.sort_chats();
+    }
+
+    /// Display name for a JID (chat or sender). Falls back to the JID string if not in contacts.
+    pub fn contact_name(&self, jid: &wr::JID) -> Arc<str> {
+        self.contacts
+            .get(jid)
+            .cloned()
+            .unwrap_or_else(|| jid.0.clone())
     }
 
     fn on_event(&mut self, event: Event) {
@@ -563,11 +490,49 @@ impl App<'_> {
                     return;
                 }
 
+                if key.code == KeyCode::Char('l')
+                    && key.modifiers == KeyModifiers::CONTROL | KeyModifiers::SHIFT
+                {
+                    self.show_logs = !self.show_logs;
+                    return;
+                }
+
+                if key.code == KeyCode::Char('p') && key.modifiers == KeyModifiers::CONTROL {
+                    let next = {
+                        let mut picker = self.picker.lock().unwrap();
+                        let current = picker.protocol_type();
+                        let next = if current == ProtocolType::Halfblocks {
+                            self.default_protocol_type
+                        } else {
+                            ProtocolType::Halfblocks
+                        };
+                        picker.set_protocol_type(next);
+                        next
+                    };
+                    self.image_cache.clear();
+                    for (message_id, meta) in self.metadata.iter_mut() {
+                        if let Metadata::File(FileMeta::Loaded) = meta {
+                            if let Some(msg) = self.messages.get(message_id) {
+                                if let wr::MessageContent::File(file) = &msg.message {
+                                    if matches!(
+                                        file.kind,
+                                        wr::FileKind::Image | wr::FileKind::Sticker
+                                    ) {
+                                        *meta = Metadata::File(FileMeta::Downloaded);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    info!("Image protocol: {:?}", next);
+                    return;
+                }
+
                 match self.selected_widget {
                     SelectedWidget::ChatList => {
                         if key.code == KeyCode::Char('l') && key.modifiers == KeyModifiers::CONTROL
                         {
-                            self.selected_widget = SelectedWidget::Input;
+                            self.selected_widget = SelectedWidget::MessageList;
                             self.input_widget.select_all();
                             return;
                         }
@@ -668,37 +633,23 @@ impl App<'_> {
         if let Event::Key(key) = event {
             if key.kind == KeyEventKind::Press {
                 match key.code {
-                    // KeyCode::Char('l') && key.modifiers == KeyModifiers::CONTROL => {
-                    //     self.selected_widget = SelectedWidget::Input;
-                    //     self.input_widget.select_all();
-                    //     return;
-                    // }
                     KeyCode::Char('j') | KeyCode::Char('k') => {
-                        // if let Some(index) = self.selected_chat_index {
-                        //     let mut delta: isize = 0;
-                        //     if key.code == KeyCode::Char('j') {
-                        //         delta = 1;
-                        //     } else if key.code == KeyCode::Char('k') {
-                        //         delta = -1;
-                        //     }
-                        //     let next_index = (index as isize + delta)
-                        //         .rem_euclid(self.sorted_chats.len() as isize)
-                        //         as usize;
-                        //     let next_chat = self.sorted_chats[next_index].jid.clone();
-                        //     self.selected_chat_jid = Some(next_chat);
-                        //     self.selected_chat_index = Some(next_index);
-                        // } else {
-                        //     self.selected_chat_index = Some(0);
-                        //     self.selected_chat_jid = Some(self.sorted_chats[0].jid.clone());
-                        // }
-                        // self.sort_chat_messages(self.selected_chat_jid.as_ref().unwrap().clone());
-                        // self.message_list_state.reset();
-
                         if key.code == KeyCode::Char('j') {
                             self.chat_list_state.select_next();
                         } else if key.code == KeyCode::Char('k') {
                             self.chat_list_state.select_previous();
                         }
+                        // Bound the selected index to the number of chats
+                        let len = self.sorted_chats.len();
+                        if len == 0 {
+                            self.chat_list_state.select(None);
+                            return;
+                        } else if let Some(selected) = self.chat_list_state.selected() {
+                            if selected >= len {
+                                self.chat_list_state.select(Some(len.saturating_sub(1)));
+                            }
+                        }
+
                         self.selected_chat_jid = self
                             .chat_list_state
                             .selected()
@@ -724,15 +675,15 @@ impl App<'_> {
     fn message_list_on_event(&mut self, event: &Event) {
         if let Event::Key(key) = event {
             if key.kind == KeyEventKind::Press {
+                if key.code == KeyCode::Char('e') && key.modifiers == KeyModifiers::CONTROL {
+                    self.message_list_state.offset =
+                        self.message_list_state.offset.saturating_sub(1);
+                }
+                if key.code == KeyCode::Char('y') && key.modifiers == KeyModifiers::CONTROL {
+                    self.message_list_state.offset =
+                        self.message_list_state.offset.saturating_add(1);
+                }
                 match key.code {
-                    KeyCode::Char('J') => {
-                        self.message_list_state.offset =
-                            self.message_list_state.offset.saturating_sub(1);
-                    }
-                    KeyCode::Char('K') => {
-                        self.message_list_state.offset =
-                            self.message_list_state.offset.saturating_add(1);
-                    }
                     KeyCode::Char('j') => {
                         self.message_list_state.select_previous();
                     }
@@ -766,7 +717,6 @@ impl App<'_> {
         self.add_or_update_chat(
             Chat {
                 jid: chat_jid.clone(),
-                name: None,
                 last_message_time: Some(message.info.timestamp),
             },
             |chat| {
@@ -805,32 +755,9 @@ impl App<'_> {
     }
 
     fn get_contacts(&mut self) {
-        let chat_list = wr::get_all_contacts();
-        for (jid, contact) in chat_list {
-            let name = get_contact_name(&contact);
-            self.add_or_update_chat(
-                Chat {
-                    jid: jid.clone(),
-                    name: name.clone(),
-                    last_message_time: None,
-                },
-                |chat| {
-                    chat.name = name;
-                },
-            );
-        }
-
-        for group_info in wr::get_joined_groups() {
-            self.add_or_update_chat(
-                Chat {
-                    jid: group_info.jid.clone(),
-                    name: Some(group_info.name.clone()),
-                    last_message_time: None,
-                },
-                |chat| {
-                    chat.name = Some(group_info.name);
-                },
-            );
+        for (jid, name) in wr::get_contacts() {
+            self.contacts.insert(jid.clone(), name.clone());
+            self.db_handler.add_contact(&jid, name.as_ref());
         }
     }
 
@@ -846,7 +773,12 @@ impl App<'_> {
 
     fn sort_chat_messages(&mut self, chat_jid: wr::JID) {
         if let Some(messages) = self.chat_messages.get_mut(&chat_jid) {
-            messages.sort_by_cached_key(|msg_id| self.messages.get(msg_id).unwrap().info.timestamp);
+            messages.sort_by_cached_key(|msg_id| {
+                self.messages
+                    .get(msg_id)
+                    .map(|m| m.info.timestamp)
+                    .unwrap_or(i64::MIN)
+            });
         }
     }
 }

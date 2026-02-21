@@ -13,7 +13,7 @@ use ratatui::{
     text::Line,
     widgets::{Block, Paragraph, StatefulWidget, Widget},
 };
-use ratatui_image::{Image, StatefulImage};
+use ratatui_image::StatefulImage;
 use textwrap;
 use whatsrust::{self as wr, FileKind};
 
@@ -68,12 +68,16 @@ fn message_height(message: &wr::Message, width: usize, app: &mut App) -> usize {
     header_height + content_height
 }
 
+/// When `render_image` is false (partial path and image fully off-screen), show a placeholder
+/// instead of StatefulImage so we don't mark the protocol as "transmitted" until we actually
+/// send at least one row to the frame.
 fn render_message(
     buf: &mut Buffer,
     message: &wr::Message,
     is_selected: bool,
     app: &mut App,
     area: Rect,
+    render_image: bool,
 ) {
     if is_selected {
         let style = Style::default()
@@ -101,11 +105,7 @@ fn render_message(
     }
     .italic();
 
-    let sender_name = if let Some(sender_chat) = app.chats.get(&message.info.sender) {
-        sender_chat.get_name()
-    } else {
-        message.info.sender.clone().into()
-    };
+    let sender_name = app.contact_name(&message.info.sender);
 
     let mut header = vec![
         sender_name.to_string().into(),
@@ -184,30 +184,6 @@ fn render_message(
                                     message.info.id.clone(),
                                 )))
                                 .unwrap();
-
-                            // Immediatly change the state to loading so that we don't load again
-
-                            // let binding = data.path.to_string();
-                            // let image_path = std::path::Path::new(&binding);
-                            //
-                            // let image_res =
-                            //     image::ImageReader::open(app.media_path.join(image_path))
-                            //         .unwrap()
-                            //         .decode();
-                            //
-                            // if let Ok(image_src) = image_res {
-                            //     let mut img = app.picker.new_resize_protocol(image_src);
-                            //     StatefulImage::default().render(media_area, buf, &mut img);
-                            //
-                            //     app.image_cache.insert(data.path.clone(), img);
-                            // } else {
-                            //     app.tx
-                            //         .send(AppInput::App(AppEvent::SetFileState(
-                            //             message.info.id.clone(),
-                            //             FileMeta::LoadFailed,
-                            //         )))
-                            //         .unwrap();
-                            // }
                         }
                     }
                     FileMeta::Downloading => {
@@ -228,33 +204,14 @@ fn render_message(
                     }
                     FileMeta::Loaded => match data.kind {
                         FileKind::Image | FileKind::Sticker => {
-                            if let Some(image) = app.image_cache.get_mut(&data.path) {
-                                // Paragraph::new(format!("🔗 {} PREVIEWWW", data.path))
-                                //     .render(media_area, buf);
-                                Image::new(image).render(media_area, buf);
+                            if render_image {
+                                if let Some(image) = app.image_cache.get_mut(&data.path) {
+                                    StatefulImage::default().render(media_area, buf, image);
+                                } else {
+                                    panic!("Image not found in cache");
+                                }
                             } else {
-                                panic!("Image not found in cache");
-                                // let binding = data.path.to_string();
-                                // let image_path = std::path::Path::new(&binding);
-                                //
-                                // let image_res =
-                                //     image::ImageReader::open(app.media_path.join(image_path))
-                                //         .unwrap()
-                                //         .decode();
-                                //
-                                // if let Ok(image_src) = image_res {
-                                //     let mut img = app.picker.new_resize_protocol(image_src);
-                                //     StatefulImage::default().render(media_area, buf, &mut img);
-                                //
-                                //     app.image_cache.insert(data.path.clone(), img);
-                                // } else {
-                                //     app.tx
-                                //         .send(AppInput::App(AppEvent::SetFileState(
-                                //             message.info.id.clone(),
-                                //             FileMeta::LoadFailed,
-                                //         )))
-                                //         .unwrap();
-                                // }
+                                Paragraph::new("🖼").render(media_area, buf);
                             }
                         }
                         FileKind::Video | FileKind::Audio | FileKind::Document => {
@@ -278,9 +235,8 @@ fn render_message(
 pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<()> {
     let chat_jid = app.selected_chat_jid.as_ref()?;
 
-    let contact = app.chats.get(chat_jid).unwrap();
     let block = Block::bordered()
-        .title(format!("Chat with {}", contact.get_name()))
+        .title(format!("Chat with {}", app.contact_name(chat_jid)))
         .border_style(Style::default().fg(
             if let SelectedWidget::MessageList = app.selected_widget {
                 ratatui::style::Color::Green
@@ -372,28 +328,81 @@ pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<(
             if too_low || too_high {
                 let item_area = Rect::new(0, 0, width as u16, height as u16);
                 let mut buf = Buffer::empty(item_area);
-                render_message(&mut buf, item, is_selected, app, item_area);
 
                 let available_top = max(top, list_area.top() as isize) as u16;
                 let available_bottom = min(bottom, list_area.bottom() as isize) as u16;
+                let visible_buf_top = (available_top as isize - top) as u16;
+                let visible_buf_height = available_bottom - available_top;
+
+                // -- BEGIN AI IMPRESSIVE HACK --
+                // Only render the image (and thus touch protocol state) when at least one image
+                // row is in the visible slice. Otherwise we'd set "transmitted" but never send
+                // any cell to the frame, and the image would never show when scrolled into view.
+                let render_image = match &item.message {
+                    wr::MessageContent::File(data)
+                        if matches!(
+                            app.metadata.get(&item.info.id),
+                            Some(Metadata::File(FileMeta::Loaded))
+                        ) && matches!(data.kind, FileKind::Image | FileKind::Sticker) =>
+                    {
+                        let image_top = 1 + if item.info.quote_id.is_some() { 1 } else { 0 };
+                        let image_bottom = image_top + IMAGE_HEIGHT as u16;
+                        let visible_buf_bottom = visible_buf_top + visible_buf_height;
+                        visible_buf_top < image_bottom && visible_buf_bottom > image_top
+                    }
+                    _ => true,
+                };
+                // -- END AI IMPRESSIVE HACK --
+
+                render_message(&mut buf, item, is_selected, app, item_area, render_image);
 
                 let buf_area = Rect::new(
                     list_area.left(),
                     available_top,
                     width as u16,
-                    available_bottom - available_top,
+                    visible_buf_height,
                 );
 
                 if !buf_area.is_empty() {
                     let mut mapped_area = buf_area;
-                    mapped_area.y = (mapped_area.y as isize - top) as u16;
+                    mapped_area.y = visible_buf_top;
                     mapped_area.x = 0;
 
-                    for (screen_row, msg_row) in buf_area.rows().zip(mapped_area.rows()) {
+                    // -- BEGIN AI IMPRESSIVE HACK --
+                    // When the visible slice doesn't include the image's first row, Kitty never
+                    // receives the image transmit (it's in that first row's cell). Inject it into
+                    // the first visible row's left cell so the image displays.
+                    let (inject_transmit, media_first_row) = match &item.message {
+                        wr::MessageContent::File(data)
+                            if matches!(
+                                app.metadata.get(&item.info.id),
+                                Some(Metadata::File(FileMeta::Loaded))
+                            ) && matches!(data.kind, FileKind::Image | FileKind::Sticker) =>
+                        {
+                            let first_row = 1 + if item.info.quote_id.is_some() { 1 } else { 0 };
+                            let inject = mapped_area.y > first_row
+                                && mapped_area.y < first_row + IMAGE_HEIGHT as u16;
+                            (inject, first_row)
+                        }
+                        _ => (false, 0),
+                    };
+
+                    for (row_idx, (screen_row, msg_row)) in
+                        buf_area.rows().zip(mapped_area.rows()).enumerate()
+                    {
                         for (screen_col, msg_col) in screen_row.columns().zip(msg_row.columns()) {
-                            frame.buffer_mut()[screen_col] = buf[msg_col].clone();
+                            let mut cell = buf[msg_col].clone();
+                            if inject_transmit && row_idx == 0 && screen_col.x == list_area.left() {
+                                let first_sym = buf[(0, media_first_row)].symbol();
+                                if let Some(pos) = first_sym.find("\x1b[s") {
+                                    let merged = format!("{}{}", &first_sym[..pos], cell.symbol());
+                                    cell.set_symbol(&merged);
+                                }
+                            }
+                            frame.buffer_mut()[screen_col] = cell;
                         }
                     }
+                    // -- END AI IMPRESSIVE HACK --
                 }
             } else {
                 let item_area = Rect {
@@ -403,7 +412,7 @@ pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<(
                     height: height as u16,
                 };
 
-                render_message(frame.buffer_mut(), item, is_selected, app, item_area);
+                render_message(frame.buffer_mut(), item, is_selected, app, item_area, true);
             }
         }
 
