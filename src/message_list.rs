@@ -179,11 +179,17 @@ fn render_message(
                         Paragraph::new(format!("🔗 {} ✓", data.path)).render(media_area, buf);
 
                         if let FileKind::Image | FileKind::Sticker = data.kind {
-                            app.tx
-                                .send(AppInput::App(AppEvent::LoadFilePreview(
-                                    message.info.id.clone(),
-                                )))
-                                .unwrap();
+                            let already_loading = matches!(
+                                app.metadata.get(&message.info.id),
+                                Some(Metadata::File(FileMeta::Loading))
+                            );
+                            if !already_loading {
+                                app.tx
+                                    .send(AppInput::App(AppEvent::LoadFilePreview(
+                                        message.info.id.clone(),
+                                    )))
+                                    .unwrap();
+                            }
                         }
                     }
                     FileMeta::Downloading => {
@@ -204,12 +210,10 @@ fn render_message(
                     }
                     FileMeta::Loaded => match data.kind {
                         FileKind::Image | FileKind::Sticker => {
-                            if render_image {
-                                if let Some(image) = app.image_cache.get_mut(&data.path) {
-                                    StatefulImage::default().render(media_area, buf, image);
-                                } else {
-                                    panic!("Image not found in cache");
-                                }
+                            if !render_image || app.image_cache.get_mut(&data.path).is_none() {
+                                Paragraph::new("🖼").render(media_area, buf);
+                            } else if let Some(image) = app.image_cache.get_mut(&data.path) {
+                                StatefulImage::default().render(media_area, buf, image);
                             } else {
                                 Paragraph::new("🖼").render(media_area, buf);
                             }
@@ -251,13 +255,13 @@ pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<(
         return Some(());
     }
 
-    let items = app
+    let items: Vec<_> = app
         .chat_messages
         .get(chat_jid)?
         .iter()
         .rev()
-        .map(|msg_id| app.messages.get(msg_id).unwrap().clone())
-        .collect::<Vec<_>>();
+        .filter_map(|msg_id| app.messages.get(msg_id).cloned())
+        .collect();
 
     if items.is_empty() {
         app.message_list_state.select(None);

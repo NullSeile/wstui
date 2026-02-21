@@ -234,6 +234,25 @@ impl App<'_> {
         wr::new_client(ws_database_path);
         info!("WhatsRust Client started");
 
+        // Single dedicated thread for all CGo downloads. Calling Go from many Rust-spawned
+        // threads can crash even with a mutex; one long-lived worker avoids that.
+        let (download_tx, download_rx) = mpsc::channel::<(wr::MessageId, wr::FileId)>();
+        let media_path = self.media_path.to_owned();
+        let app_tx = self.tx.clone();
+        thread::spawn(move || {
+            for (message_id, file_id) in download_rx {
+                let result = wr::download_file(&file_id, &media_path);
+                let state = if result.is_err() {
+                    FileMeta::DownloadFailed
+                } else {
+                    FileMeta::Downloaded
+                };
+                app_tx
+                    .send(AppInput::App(AppEvent::SetFileState(message_id, state)))
+                    .unwrap();
+            }
+        });
+
         // thread::spawn(|| {
         wr::connect(move |data| {
             qr2term::print_qr(data).unwrap();
@@ -277,61 +296,60 @@ impl App<'_> {
                         true
                     }
                     AppEvent::LoadFilePreview(message_id) => {
-                        // if matches!(
-                        //     self.metadata.get(&message_id),
-                        //     Some(Metadata::File(FileMeta::Loading))
-                        // ) {
-                        //     // Already loading
-                        //     // return;
-                        // }
-                        self.metadata
-                            .insert(message_id.clone(), Metadata::File(FileMeta::Loading));
+                        if !matches!(
+                            self.metadata.get(&message_id),
+                            Some(Metadata::File(FileMeta::Loading))
+                        ) {
+                            self.metadata
+                                .insert(message_id.clone(), Metadata::File(FileMeta::Loading));
 
-                        let tx = self.tx.clone();
-                        let media_path = self.media_path.to_owned();
-                        let picker = Arc::clone(&self.picker);
+                            let tx = self.tx.clone();
+                            let media_path = self.media_path.to_owned();
+                            let picker = Arc::clone(&self.picker);
 
-                        let wr::MessageContent::File(file) =
-                            self.messages.get(&message_id).unwrap().message.clone()
-                        else {
-                            // panic!("Expected a file message for preview");
-                            error!("Expected a file message for preview");
-                            return;
-                        };
+                            let file = match &self.messages.get(&message_id).unwrap().message {
+                                wr::MessageContent::File(f) => Some(f.clone()),
+                                _ => None,
+                            };
+                            if let Some(file) = file {
+                                thread::spawn(move || {
+                                    let binding = file.path.to_string();
+                                    let path = std::path::Path::new(&binding);
+                                    let image_res = image::ImageReader::open(media_path.join(path))
+                                        .unwrap()
+                                        .decode();
 
-                        thread::spawn(move || {
-                            let binding = file.path.to_string();
-                            let path = std::path::Path::new(&binding);
-                            let image_res = image::ImageReader::open(media_path.join(path))
-                                .unwrap()
-                                .decode();
+                                    if let Ok(image_src) = image_res {
+                                        let mut img =
+                                            picker.lock().unwrap().new_resize_protocol(image_src);
+                                        img.resize_encode(
+                                            &Resize::Scale(None),
+                                            Rect {
+                                                x: 0,
+                                                y: 0,
+                                                width: IMAGE_WIDTH as u16,
+                                                height: IMAGE_HEIGHT as u16,
+                                            },
+                                        );
 
-                            if let Ok(image_src) = image_res {
-                                let mut img = picker.lock().unwrap().new_resize_protocol(image_src);
-                                img.resize_encode(
-                                    &Resize::Scale(None),
-                                    Rect {
-                                        x: 0,
-                                        y: 0,
-                                        width: IMAGE_WIDTH as u16,
-                                        height: IMAGE_HEIGHT as u16,
-                                    },
-                                );
-
-                                tx.send(AppInput::App(AppEvent::SetFilePreview(
-                                    message_id.clone(),
-                                    file.path.clone(),
-                                    img,
-                                )))
-                                .unwrap();
+                                        tx.send(AppInput::App(AppEvent::SetFilePreview(
+                                            message_id.clone(),
+                                            file.path.clone(),
+                                            img,
+                                        )))
+                                        .unwrap();
+                                    } else {
+                                        tx.send(AppInput::App(AppEvent::SetFileState(
+                                            message_id.clone(),
+                                            FileMeta::LoadFailed,
+                                        )))
+                                        .unwrap();
+                                    }
+                                });
                             } else {
-                                tx.send(AppInput::App(AppEvent::SetFileState(
-                                    message_id.clone(),
-                                    FileMeta::LoadFailed,
-                                )))
-                                .unwrap();
+                                error!("Expected a file message for preview");
                             }
-                        });
+                        }
                         false // We will redraw after the preview is loaded
                     }
                     AppEvent::SetFileState(message_id, state) => {
@@ -341,39 +359,17 @@ impl App<'_> {
                         true
                     }
                     AppEvent::DownloadFile(message_id, file_id) => {
-                        let tx = self.tx.clone();
-                        let media_path = self.media_path.to_owned();
-
                         if matches!(
                             self.metadata.get(&message_id),
                             Some(Metadata::File(FileMeta::Downloading))
                         ) {
-                            // Already downloading
-                            return;
+                            false
+                        } else {
+                            self.metadata
+                                .insert(message_id.clone(), Metadata::File(FileMeta::Downloading));
+                            download_tx.send((message_id, file_id)).unwrap();
+                            false
                         }
-
-                        self.metadata
-                            .insert(message_id.clone(), Metadata::File(FileMeta::Downloading));
-
-                        thread::spawn(move || {
-                            let result = wr::download_file(&file_id, &media_path);
-
-                            if let Err(_) = result {
-                                tx.send(AppInput::App(AppEvent::SetFileState(
-                                    message_id.clone(),
-                                    FileMeta::DownloadFailed,
-                                )))
-                                .unwrap();
-                                return;
-                            }
-
-                            tx.send(AppInput::App(AppEvent::SetFileState(
-                                message_id.clone(),
-                                FileMeta::Downloaded,
-                            )))
-                            .unwrap();
-                        });
-                        false // We will redraw after the download is done
                     }
                     AppEvent::DownloadFileDone(message_id, state) => {
                         self.metadata
@@ -423,7 +419,6 @@ impl App<'_> {
                             .position(|chat| &chat.jid == current_jid);
                         self.chat_list_state.select(position);
                     } else if len > 0 {
-                        // No chat selected; ensure we don't leave a stale out-of-bounds index
                         let current = self.chat_list_state.selected();
                         if current.map_or(true, |i| i >= len) {
                             self.chat_list_state.select(Some(0));
