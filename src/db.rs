@@ -85,7 +85,7 @@ impl DatabaseHandler {
                                             msg.info.timestamp,
                                             msg.info.quote_id,
                                             msg.info.is_from_me,
-                                            msg.info.is_read,
+                                            msg.info.read_by,
                                             text,
                                         ])
                                         .unwrap();
@@ -99,7 +99,7 @@ impl DatabaseHandler {
                                             msg.info.timestamp,
                                             msg.info.quote_id,
                                             msg.info.is_from_me,
-                                            msg.info.is_read,
+                                            msg.info.read_by,
                                             file.kind.clone() as u8,
                                             file.path,
                                             file.file_id,
@@ -184,7 +184,7 @@ impl DatabaseHandler {
                             let timestamp: i64 = row.get(3).unwrap();
                             let quote_id: Option<String> = row.get(4).unwrap_or(None);
                             let is_from_me: bool = row.get(5).unwrap();
-                            let is_read: bool = row.get(6).unwrap();
+                            let read_by: u16 = row.get(6).unwrap();
 
                             let message: String = row.get(7).unwrap();
 
@@ -196,7 +196,7 @@ impl DatabaseHandler {
                                     timestamp,
                                     quote_id: quote_id.map(|q| q.into()),
                                     is_from_me,
-                                    is_read,
+                                    read_by,
                                 },
                                 message: wr::MessageContent::Text(message.into()),
                             })
@@ -214,7 +214,7 @@ impl DatabaseHandler {
                             let timestamp: i64 = row.get(3).unwrap();
                             let quote_id: Option<String> = row.get(4).unwrap_or(None);
                             let is_from_me: bool = row.get(5).unwrap();
-                            let is_read: bool = row.get(6).unwrap();
+                            let read_by: u16 = row.get(6).unwrap();
 
                             let kind: u8 = row.get(7).unwrap();
                             let path: String = row.get(8).unwrap();
@@ -229,7 +229,7 @@ impl DatabaseHandler {
                                     timestamp,
                                     quote_id: quote_id.map(|q| q.into()),
                                     is_from_me,
-                                    is_read,
+                                    read_by,
                                 },
                                 message: wr::MessageContent::File(wr::FileContent {
                                     kind: wr::FileKind::from_repr(kind).unwrap(),

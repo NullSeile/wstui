@@ -38,13 +38,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 }
                 wr::MessageContent::File(ref file) => match file.kind {
                     wr::FileKind::Image | wr::FileKind::Sticker => {
-                        if let Some(image) = app.image_cache.get_mut(&file.path) {
-                            frame.render_stateful_widget(
-                                StatefulImage::default().resize(Resize::Scale(None)),
-                                area,
-                                image,
-                            );
-                        }
+                        let paragraph = Paragraph::new("Image not supported yet");
+                        frame.render_widget(paragraph, area);
+                        // if let Some(image) = app.image_cache.get_mut(&file.path) {
+                        //     frame.render_stateful_widget(
+                        //         StatefulImage::default().resize(Resize::Scale(None)),
+                        //         area,
+                        //         image,
+                        //     );
+                        // }
                     }
                     wr::FileKind::Video => {
                         let paragraph = Paragraph::new("Video not supported yet");
@@ -90,7 +92,7 @@ fn render_contacts(frame: &mut Frame, app: &mut App, area: Rect) {
         .map(|entry| entry.get_name().to_string())
         .collect::<Vec<_>>();
 
-    let mut list_state = ListState::default().with_selected(app.selected_chat_index);
+    // let mut list_state = ListState::default().with_selected(app.selected_chat_index);
 
     let list = List::new(items)
         .block(
@@ -109,7 +111,8 @@ fn render_contacts(frame: &mut Frame, app: &mut App, area: Rect) {
                 )),
         )
         .highlight_style(ratatui::style::Style::default().fg(ratatui::style::Color::Green));
-    frame.render_stateful_widget(list, area, &mut list_state);
+    frame.render_stateful_widget(list, area, &mut app.chat_list_state);
+    // frame.render_stateful_widget(list, area, &mut list_state);
 }
 
 pub fn render_chats(frame: &mut Frame, app: &mut App, area: Rect) {

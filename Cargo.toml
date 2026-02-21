@@ -9,11 +9,11 @@ log = "0.4"
 whatsrust = { path = "whatsrust" }
 clap = { version = "4.5", features = ["derive"] }
 textwrap = "0.16.2"
-chrono = "0.4.40"
-image = "0.25.6"
+chrono = "0.4.43"
+image = "0.25.9"
 rusqlite = { version = "0.34.0", features = ["bundled"] }
 ratatui = "0.29.0"
-ratatui-image = "8.0.0"
+ratatui-image = "9.0.0"
 strum = { version = "0.27", features = ["derive"] }
 tui-textarea = "0.7.0"
 tui-logger = "0.17.1"

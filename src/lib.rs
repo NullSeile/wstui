@@ -1,3 +1,4 @@
+use core::fmt;
 use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
@@ -11,13 +12,26 @@ pub mod vim;
 use db::DatabaseHandler;
 use log::{error, info};
 use message_list::MessageListState;
+use message_list::{IMAGE_HEIGHT, IMAGE_WIDTH};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use ratatui::widgets::Block;
+use ratatui::layout::Rect;
+use ratatui::widgets::{Block, ListState};
+use ratatui_image::Resize;
 use ratatui_image::picker::Picker;
-use ratatui_image::protocol::StatefulProtocol;
+use ratatui_image::protocol::{Protocol, StatefulProtocol};
 use tui_textarea::TextArea;
 use vim::Vim;
 use whatsrust as wr;
+
+// use crate::message_list::IMAGE_HEIGHT;
+
+// if let Some(type) = match evt.Type {
+//     Read | ReadSelf => Some("Read"),
+//     Received => Some("Received"),
+//     _ => None,
+// } {
+//
+// }
 
 pub fn get_contact_name(contact: &wr::Contact) -> Option<Arc<str>> {
     if !contact.full_name.is_empty() {
@@ -50,10 +64,14 @@ impl Chat {
     }
 }
 
+#[derive(Debug)]
 pub enum FileMeta {
-    Downloaded,
-    DownloadFailed,
+    Loaded,
+    Loading,
     LoadFailed,
+    Downloaded,
+    Downloading,
+    DownloadFailed,
 }
 
 pub enum Metadata {
@@ -62,9 +80,43 @@ pub enum Metadata {
 
 pub enum AppEvent {
     DownloadFile(wr::MessageId, wr::FileId),
+    DownloadFileDone(wr::MessageId, FileMeta),
+    LoadFilePreview(wr::MessageId),
+    SetFilePreview(wr::MessageId, Arc<str>, Protocol),
     SetFileState(wr::MessageId, FileMeta),
 }
 
+impl fmt::Debug for AppEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AppEvent::DownloadFile(message_id, file_id) => f
+                .debug_tuple("DownloadFile")
+                .field(message_id)
+                .field(file_id)
+                .finish(),
+            AppEvent::DownloadFileDone(message_id, state) => f
+                .debug_tuple("DownloadFileDone")
+                .field(message_id)
+                .field(state)
+                .finish(),
+            AppEvent::LoadFilePreview(message_id) => {
+                f.debug_tuple("LoadFilePreview").field(message_id).finish()
+            }
+            AppEvent::SetFilePreview(message_id, path, _) => f
+                .debug_tuple("SetFilePreview")
+                .field(message_id)
+                .field(path)
+                .finish(),
+            AppEvent::SetFileState(message_id, state) => f
+                .debug_tuple("SetFileState")
+                .field(message_id)
+                .field(state)
+                .finish(),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub enum AppInput {
     Draw,
     App(AppEvent),
@@ -90,15 +142,16 @@ pub struct App<'a> {
 
     pub sorted_chats: Vec<Chat>,
     pub selected_chat_jid: Option<wr::JID>,
-    pub selected_chat_index: Option<usize>,
+    // pub selected_chat_index: Option<usize>,
+    pub chat_list_state: ListState,
 
     pub history_sync_percent: Option<u8>,
 
     pub quoting_message: Option<wr::Message>,
     pub message_list_state: MessageListState,
     pub metadata: HashMap<wr::MessageId, Metadata>,
-    pub image_cache: HashMap<Arc<str>, StatefulProtocol>,
-    pub picker: Picker,
+    pub image_cache: HashMap<Arc<str>, Protocol>,
+    pub picker: Arc<Picker>,
 
     pub selected_widget: SelectedWidget,
 
@@ -131,15 +184,18 @@ impl Default for App<'_> {
             messages: HashMap::new(),
             chats: HashMap::new(),
             chat_messages: HashMap::new(),
+
             sorted_chats: Vec::new(),
             selected_chat_jid: None,
-            selected_chat_index: None,
+            // selected_chat_index: None,
+            chat_list_state: ListState::default(),
+
             message_list_state: MessageListState::default(),
             metadata: HashMap::new(),
             history_sync_percent: None,
             image_cache: HashMap::new(),
             quoting_message: None,
-            picker,
+            picker: Arc::new(picker),
             selected_widget: SelectedWidget::ChatList,
             vim: Vim::new(vim::Mode::Insert),
             input_border: vim::Mode::Insert.block(),
@@ -191,6 +247,7 @@ impl App<'_> {
 
         wr::new_client(ws_database_path);
 
+        // thread::spawn(|| {
         wr::connect(move |data| {
             qr2term::print_qr(data).unwrap();
             if let Some(phone) = phone.as_ref() {
@@ -198,6 +255,7 @@ impl App<'_> {
                 println!("Pairing code: {}", code);
             }
         });
+        // });
 
         let mut terminal = ratatui::init();
 
@@ -215,8 +273,106 @@ impl App<'_> {
         terminal.draw(|frame| ui::draw(frame, self)).unwrap();
 
         loop {
-            let should_draw = match self.rx.recv() {
+            let msg = self.rx.recv();
+            // info!("Received message: {:?}", &msg);
+            let should_draw = match msg {
                 Ok(AppInput::App(event)) => match event {
+                    AppEvent::SetFilePreview(message_id, file_path, img) => {
+                        self.image_cache.insert(file_path.clone(), img);
+                        self.metadata
+                            .insert(message_id.clone(), Metadata::File(FileMeta::Loaded));
+
+                        info!("Set file preview for message: {:?}", message_id);
+
+                        true
+                    }
+                    AppEvent::LoadFilePreview(message_id) => {
+                        // if matches!(
+                        //     self.metadata.get(&message_id),
+                        //     Some(Metadata::File(FileMeta::Loading))
+                        // ) {
+                        //     // Already loading
+                        //     // return;
+                        // }
+                        self.metadata
+                            .insert(message_id.clone(), Metadata::File(FileMeta::Loading));
+
+                        let tx = self.tx.clone();
+                        let media_path = self.media_path.to_owned();
+                        let picker = Arc::clone(&self.picker);
+
+                        let wr::MessageContent::File(file) =
+                            self.messages.get(&message_id).unwrap().message.clone()
+                        else {
+                            // panic!("Expected a file message for preview");
+                            error!("Expected a file message for preview");
+                            return;
+                        };
+
+                        thread::spawn(move || {
+                            let binding = file.path.to_string();
+                            let path = std::path::Path::new(&binding);
+                            let image_res = image::ImageReader::open(media_path.join(path))
+                                .unwrap()
+                                .decode();
+
+                            // image_res
+                            //     .map(|image_src| {
+                            //         picker.new_protocol(
+                            //             image_src,
+                            //             Rect {
+                            //                 x: 0,
+                            //                 y: 0,
+                            //                 width: IMAGE_WIDTH as u16,
+                            //                 height: IMAGE_HEIGHT as u16,
+                            //             },
+                            //             Resize::Fit(None),
+                            //         )
+                            //     })
+                            //     .map(|img| {
+                            //         tx.send(AppInput::App(AppEvent::SetFilePreview(
+                            //             file.path.clone(),
+                            //             img.unwrap(),
+                            //         )));
+                            //     })
+                            //     .unwrap_or_else(|_| {
+                            //         error!("Failed to load image preview");
+                            //         tx.send(AppInput::App(AppEvent::SetFileState(
+                            //             message_id.clone(),
+                            //             FileMeta::LoadFailed,
+                            //         )))
+                            //         .unwrap();
+                            //     });
+
+                            if let Ok(image_src) = image_res {
+                                let img = picker
+                                    .new_protocol(
+                                        image_src,
+                                        Rect {
+                                            x: 0,
+                                            y: 0,
+                                            width: IMAGE_WIDTH as u16,
+                                            height: IMAGE_HEIGHT as u16,
+                                        },
+                                        Resize::Fit(None),
+                                    )
+                                    .unwrap();
+                                tx.send(AppInput::App(AppEvent::SetFilePreview(
+                                    message_id.clone(),
+                                    file.path.clone(),
+                                    img,
+                                )))
+                                .unwrap();
+                            } else {
+                                tx.send(AppInput::App(AppEvent::SetFileState(
+                                    message_id.clone(),
+                                    FileMeta::LoadFailed,
+                                )))
+                                .unwrap();
+                            }
+                        });
+                        false // We will redraw after the preview is loaded
+                    }
                     AppEvent::SetFileState(message_id, state) => {
                         self.metadata
                             .insert(message_id.clone(), Metadata::File(state));
@@ -224,14 +380,95 @@ impl App<'_> {
                         true
                     }
                     AppEvent::DownloadFile(message_id, file_id) => {
-                        let state = match wr::download_file(&file_id, self.media_path) {
-                            Ok(_) => FileMeta::Downloaded,
-                            Err(_) => FileMeta::DownloadFailed,
-                        };
+                        let tx = self.tx.clone();
+                        let media_path = self.media_path.to_owned();
+                        // let picker = Arc::clone(&self.picker);
+
+                        // let wr::MessageContent::File(file) =
+                        //     self.messages.get(&message_id).unwrap().message.clone()
+                        // else {
+                        //     error!("Expected a file message for download");
+                        //     return;
+                        // };
+
+                        if matches!(
+                            self.metadata.get(&message_id),
+                            Some(Metadata::File(FileMeta::Downloading))
+                        ) {
+                            // Already downloading
+                            return;
+                        }
 
                         self.metadata
-                            .insert(message_id.clone(), Metadata::File(state));
+                            .insert(message_id.clone(), Metadata::File(FileMeta::Downloading));
 
+                        thread::spawn(move || {
+                            let result = wr::download_file(&file_id, &media_path);
+
+                            if let Err(_) = result {
+                                tx.send(AppInput::App(AppEvent::SetFileState(
+                                    message_id.clone(),
+                                    FileMeta::DownloadFailed,
+                                )))
+                                .unwrap();
+                                return;
+                            }
+
+                            tx.send(AppInput::App(AppEvent::SetFileState(
+                                message_id.clone(),
+                                FileMeta::Downloaded,
+                            )))
+                            .unwrap();
+
+                            // let state = match wr::download_file(&file_id, &media_path) {
+                            //     Ok(_) => FileMeta::Downloaded,
+                            //     Err(_) => FileMeta::DownloadFailed,
+                            // };
+
+                            // match wr::download_file(&file_id, &media_path) {
+                            //     Ok(_) => match file.kind {
+                            //         wr::FileKind::Image | wr::FileKind::Sticker => {
+                            //             let image = StatefulProtocol::new(
+                            //                 file.path.clone(),
+                            //                 media_path.join(&file.path),
+                            //             );
+                            //             tx.send(AppInput::App(AppEvent::SetFileState(
+                            //                 message_id,
+                            //                 Metadata::File(FileMeta::Loaded),
+                            //             )))
+                            //             .unwrap();
+                            //             tx.send(AppInput::Draw).unwrap();
+                            //             self.image_cache.insert(file.path.clone(), image);
+                            //         }
+                            //         wr::FileKind::Video
+                            //         | wr::FileKind::Audio
+                            //         | wr::FileKind::Document => {
+                            //             tx.send(AppInput::App(AppEvent::SetFileState(
+                            //                 message_id,
+                            //                 FileMeta::Loaded,
+                            //             )))
+                            //             .unwrap();
+                            //         }
+                            //     },
+                            //     Err(_) => {
+                            //         tx.send(AppInput::App(AppEvent::SetFileState(
+                            //             message_id,
+                            //             FileMeta::DownloadFailed,
+                            //         )))
+                            //         .unwrap();
+                            //     }
+                            // };
+
+                            // tx.send(AppInput::App(AppEvent::DownloadFileDone(
+                            //     message_id, state,
+                            // )))
+                            // .unwrap();
+                        });
+                        false // We will redraw after the download is done
+                    }
+                    AppEvent::DownloadFileDone(message_id, state) => {
+                        self.metadata
+                            .insert(message_id.clone(), Metadata::File(state));
                         true
                     }
                 },
@@ -246,6 +483,23 @@ impl App<'_> {
                         self.history_sync_percent = Some(percent);
                         true
                     }
+                    wr::Event::Receipt {
+                        kind,
+                        chat,
+                        message_ids,
+                    } => {
+                        info!(
+                            "Received receipt: {:?} for chat: {:?} with messages: {:?}",
+                            kind, chat, message_ids
+                        );
+                        for msg_id in message_ids {
+                            if let Some(message) = self.messages.get_mut(&msg_id) {
+                                message.info.read_by += 1;
+                                self.db_handler.add_message(message);
+                            }
+                        }
+                        true
+                    }
                 },
                 Ok(AppInput::Message(msg)) => {
                     self.db_handler.add_message(&msg);
@@ -253,12 +507,12 @@ impl App<'_> {
 
                     self.sort_chats();
                     if let Some(ref current_jid) = self.selected_chat_jid {
-                        self.selected_chat_index = self
-                            .sorted_chats
-                            .iter()
-                            .position(|chat| &chat.jid == current_jid);
+                        self.chat_list_state.select(
+                            self.sorted_chats
+                                .iter()
+                                .position(|chat| &chat.jid == current_jid),
+                        )
                     }
-
                     false // We will redraw manually
                 }
                 Ok(AppInput::Terminal(event)) => {
@@ -386,6 +640,14 @@ impl App<'_> {
                 }
                 return;
             }
+            if key.code == KeyCode::Char('k') && key.modifiers == KeyModifiers::CONTROL {
+                self.selected_widget = SelectedWidget::MessageList;
+                return;
+            }
+            if key.code == KeyCode::Char('h') && key.modifiers == KeyModifiers::CONTROL {
+                self.selected_widget = SelectedWidget::ChatList;
+                return;
+            }
         }
 
         self.vim = match self
@@ -406,29 +668,47 @@ impl App<'_> {
         if let Event::Key(key) = event {
             if key.kind == KeyEventKind::Press {
                 match key.code {
+                    // KeyCode::Char('l') && key.modifiers == KeyModifiers::CONTROL => {
+                    //     self.selected_widget = SelectedWidget::Input;
+                    //     self.input_widget.select_all();
+                    //     return;
+                    // }
                     KeyCode::Char('j') | KeyCode::Char('k') => {
-                        if let Some(index) = self.selected_chat_index {
-                            let mut delta: isize = 0;
-                            if key.code == KeyCode::Char('j') {
-                                delta = 1;
-                            } else if key.code == KeyCode::Char('k') {
-                                delta = -1;
-                            }
-                            let next_index = (index as isize + delta)
-                                .rem_euclid(self.sorted_chats.len() as isize)
-                                as usize;
-                            let next_chat = self.sorted_chats[next_index].jid.clone();
-                            self.selected_chat_jid = Some(next_chat);
-                            self.selected_chat_index = Some(next_index);
-                        } else {
-                            self.selected_chat_index = Some(0);
-                            self.selected_chat_jid = Some(self.sorted_chats[0].jid.clone());
+                        // if let Some(index) = self.selected_chat_index {
+                        //     let mut delta: isize = 0;
+                        //     if key.code == KeyCode::Char('j') {
+                        //         delta = 1;
+                        //     } else if key.code == KeyCode::Char('k') {
+                        //         delta = -1;
+                        //     }
+                        //     let next_index = (index as isize + delta)
+                        //         .rem_euclid(self.sorted_chats.len() as isize)
+                        //         as usize;
+                        //     let next_chat = self.sorted_chats[next_index].jid.clone();
+                        //     self.selected_chat_jid = Some(next_chat);
+                        //     self.selected_chat_index = Some(next_index);
+                        // } else {
+                        //     self.selected_chat_index = Some(0);
+                        //     self.selected_chat_jid = Some(self.sorted_chats[0].jid.clone());
+                        // }
+                        // self.sort_chat_messages(self.selected_chat_jid.as_ref().unwrap().clone());
+                        // self.message_list_state.reset();
+
+                        if key.code == KeyCode::Char('j') {
+                            self.chat_list_state.select_next();
+                        } else if key.code == KeyCode::Char('k') {
+                            self.chat_list_state.select_previous();
                         }
+                        self.selected_chat_jid = self
+                            .chat_list_state
+                            .selected()
+                            .map(|index| self.sorted_chats[index].jid.clone());
+
                         self.sort_chat_messages(self.selected_chat_jid.as_ref().unwrap().clone());
                         self.message_list_state.reset();
                     }
                     KeyCode::Enter => {
-                        if let Some(index) = self.selected_chat_index {
+                        if let Some(index) = self.chat_list_state.selected() {
                             let chat_jid = self.sorted_chats[index].jid.clone();
                             self.selected_chat_jid = Some(chat_jid);
                             self.message_list_state.reset();

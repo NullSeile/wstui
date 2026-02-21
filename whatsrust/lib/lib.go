@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
-	"go.mau.fi/whatsmeow"
 	"os"
 	"path"
+
+	"go.mau.fi/whatsmeow"
 )
 
 const (
@@ -99,7 +101,7 @@ const (
 
 // TODO: Implement URL download
 func DownloadFromFileInfo(client *whatsmeow.Client, info DownloadInfo) ([]byte, error) {
-	return client.DownloadMediaWithPath(info.DirectPath, info.FileEncSha256, info.FileSha256, info.MediaKey, info.Size, info.MediaType, mediaTypeToMMSType[info.MediaType])
+	return client.DownloadMediaWithPath(context.Background(), info.DirectPath, info.FileEncSha256, info.FileSha256, info.MediaKey, info.Size, info.MediaType, mediaTypeToMMSType[info.MediaType])
 }
 func FileIdToDownloadInfo(fileId string) (DownloadInfo, error) {
 	var info DownloadInfo

@@ -62,7 +62,7 @@ struct CMessageInfo {
     timestamp: i64,
     is_from_me: bool,
     quote_id: *const c_char,
-    is_read: bool,
+    read_by: u16,
 }
 
 #[repr(C)]
@@ -97,6 +97,14 @@ struct CMessage {
     message: *const c_void,
 }
 
+#[repr(C)]
+struct CReceipt {
+    kind: u8,
+    chat: CJID,
+    message_ids: *const *const c_char,
+    count: u32,
+}
+
 #[derive(Clone, Debug)]
 #[repr(C)]
 struct CEvent {
@@ -114,7 +122,7 @@ pub struct MessageInfo {
     pub timestamp: i64,
     pub is_from_me: bool,
     pub quote_id: Option<Arc<str>>,
-    pub is_read: bool,
+    pub read_by: u16,
 }
 
 #[derive(FromRepr)]
@@ -140,12 +148,18 @@ pub enum FileKind {
 enum EventType {
     SyncProgress = 0,
     AppStateSyncComplete = 1,
+    Receipt = 2,
 }
 
 #[derive(Clone, Debug)]
 pub enum Event {
     SyncProgress(u8),
     AppStateSyncComplete,
+    Receipt {
+        kind: u8,
+        chat: JID,
+        message_ids: Vec<MessageId>,
+    },
 }
 
 pub type FileId = Arc<str>;
@@ -269,6 +283,27 @@ impl CallbackTranslator<*const CEvent> for Event {
                 Event::SyncProgress(percent)
             }
             EventType::AppStateSyncComplete => Event::AppStateSyncComplete,
+            EventType::Receipt => {
+                let receipt = unsafe { &(*(event.data as *const CReceipt)) };
+                let chat: JID = (&receipt.chat).into();
+                let message_ids = unsafe {
+                    std::slice::from_raw_parts(receipt.message_ids, receipt.count as usize)
+                }
+                .iter()
+                .map(|&id| {
+                    unsafe { CStr::from_ptr(id) }
+                        .to_string_lossy()
+                        .into_owned()
+                        .into()
+                })
+                .collect();
+
+                Event::Receipt {
+                    kind: receipt.kind,
+                    chat,
+                    message_ids,
+                }
+            }
         }
     }
 }
@@ -351,7 +386,7 @@ impl CallbackTranslator<*const CMessage> for Message {
                 timestamp: msg.info.timestamp,
                 is_from_me: msg.info.is_from_me,
                 quote_id,
-                is_read: msg.info.is_read,
+                read_by: msg.info.read_by,
             },
             message,
         }
@@ -419,7 +454,7 @@ pub fn send_message(jid: &JID, message: &str, quoted_message: Option<&Message>) 
                 .map_or(std::ptr::null(), |q| {
                     CString::new(q.as_ref()).unwrap().into_raw()
                 }),
-            is_read: quoted_message.info.is_read,
+            read_by: quoted_message.info.read_by,
         };
 
         unsafe { C_SendMessage(jid_c, message_c.as_ptr(), &info as *const _) }

@@ -39,7 +39,7 @@ typedef struct {
 	int64_t timestamp;
 	bool isFromMe;
 	char* quoteID;
-	bool isRead;
+	uint16_t readBy;
 } MessageInfo;
 
 typedef struct {
@@ -59,6 +59,12 @@ typedef struct {
 	void* message;
 } Message;
 
+typedef struct {
+	uint8_t kind;
+	JID id;
+	char* const* messageIDs;
+	size_t size;
+} ReceiptEvent;
 
 typedef struct {
 	uint8_t kind;
@@ -228,11 +234,11 @@ func C_SetMessageHandler(callback C.MessageHandlerCallback, data unsafe.Pointer)
 func C_NewClient(dbPath *C.char) {
 	goPath := C.GoString(dbPath)
 	dbLog := &WrLogger{}
-	container, err := sqlstore.New("sqlite3", "file:"+goPath+"?_foreign_keys=on", dbLog)
+	container, err := sqlstore.New(context.Background(), "sqlite3", "file:"+goPath+"?_foreign_keys=on", dbLog)
 	if err != nil {
 		panic(err)
 	}
-	deviceStore, _ := container.GetFirstDevice()
+	deviceStore, _ := container.GetFirstDevice(context.Background())
 	clientLog := &WrLogger{}
 	client = whatsmeow.NewClient(deviceStore, clientLog)
 }
@@ -289,6 +295,7 @@ func ExtensionByType(mimeType string, defaultExt string) string {
 const (
 	EventTypeSyncProgress = iota
 	EventTypeAppStateSyncComplete
+	EventTypeReceipt
 )
 
 const (
@@ -372,8 +379,7 @@ func HandleMessage(info types.MessageInfo, msg *waE2E.Message, isSync bool) {
 		timestamp: C.int64_t(timestamp),
 		isFromMe:  C.bool(info.IsFromMe),
 		quoteID:   nil,
-		isRead:    C.bool(false),
-		// isRead:    C.bool(info.IsFromMe),
+		readBy:    C.uint16_t(0),
 	}
 
 	if msg.Conversation != nil {
@@ -648,6 +654,9 @@ func C_DownloadFile(fileId *C.char, basePath *C.char) C.uint8_t {
 func AddEventHandlers() {
 	client.AddEventHandler(func(rawEvt any) {
 		switch evt := rawEvt.(type) {
+		case *events.MarkChatAsRead:
+			LOG_INFO("MarkChatAsRead %v", evt.JID)
+
 		case *events.AppStateSyncComplete:
 			LOG_ERROR("AppStateStateSyncComplete %v", evt)
 			if evt.Name == appstate.WAPatchRegular {
@@ -664,9 +673,34 @@ func AddEventHandlers() {
 			HandleMessage(evt.Info, evt.Message, false)
 
 		case *events.Receipt:
-			// LOG_INFO("Receipt: %s %s %s", evt.Type, evt.MessageIDs, evt.SourceString())
+
+			receiptKind := -1
 			if evt.Type == types.ReceiptTypeRead || evt.Type == types.ReceiptTypeReadSelf {
+				receiptKind = 0
+			}
+
+			if receiptKind != -1 {
 				LOG_INFO("%#v was read by %s at %s", evt.MessageIDs, evt.SourceString(), evt.Timestamp)
+				n := len(evt.MessageIDs)
+				cmessageIds := (**C.char)(C.malloc(C.size_t(n) * C.size_t(unsafe.Sizeof(uintptr(0)))))
+				messageIds := unsafe.Slice(cmessageIds, len(evt.MessageIDs))
+				for i, id := range evt.MessageIDs {
+					messageIds[i] = C.CString(id)
+				}
+
+				cchatId := jidToC(evt.MessageSource.Chat)
+
+				creceipt := (*C.ReceiptEvent)(C.malloc(C.sizeof_ReceiptEvent))
+				creceipt.kind = C.uint8_t(EventTypeReceipt)
+				creceipt.id = cchatId
+				creceipt.messageIDs = cmessageIds
+				creceipt.size = C.size_t(n)
+
+				cevent := C.Event{
+					kind: C.uint8_t(EventTypeReceipt),
+					data: unsafe.Pointer(creceipt),
+				}
+				C.callEventCallback(eventHandler, &cevent)
 			}
 
 		case *events.HistorySync:
@@ -735,7 +769,7 @@ func C_Connect(handler C.QrCallback, data unsafe.Pointer) {
 //export C_PairPhone
 func C_PairPhone(phone *C.char) *C.char {
 	goPhone := C.GoString(phone)
-	code, err := client.PairPhone(goPhone, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
+	code, err := client.PairPhone(context.Background(), goPhone, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
 	if err != nil {
 		panic(err)
 	}
@@ -787,7 +821,7 @@ func C_SendMessage(cjid C.JID, ctext *C.char, quoted_msg *C.Message) {
 
 //export C_GetJoinedGroups
 func C_GetJoinedGroups() C.GetJoinedGroupsResult {
-	groups, err := client.GetJoinedGroups()
+	groups, err := client.GetJoinedGroups(context.Background())
 	if err != nil {
 		panic(err)
 	}
@@ -814,7 +848,7 @@ func C_GetJoinedGroups() C.GetJoinedGroupsResult {
 
 //export C_GetAllContacts
 func C_GetAllContacts() C.ContactsMapResult {
-	contacts, err := client.Store.Contacts.GetAllContacts()
+	contacts, err := client.Store.Contacts.GetAllContacts(context.Background())
 	if err != nil {
 		panic(err)
 	}

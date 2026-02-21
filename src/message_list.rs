@@ -13,19 +13,26 @@ use ratatui::{
     text::Line,
     widgets::{Block, Paragraph, StatefulWidget, Widget},
 };
-use ratatui_image::StatefulImage;
+use ratatui_image::{Image, StatefulImage};
 use textwrap;
 use whatsrust::{self as wr, FileKind};
 
 use crate::{App, AppEvent, AppInput, FileMeta, Metadata, SelectedWidget};
+
+pub const IMAGE_HEIGHT: usize = 12;
+pub const IMAGE_WIDTH: usize = IMAGE_HEIGHT * 3;
 
 fn file_content_height(id: &wr::MessageId, file: &wr::FileContent, app: &mut App) -> usize {
     match file.kind {
         FileKind::Image | FileKind::Sticker => match app.metadata.get(id) {
             None => 1,
             Some(Metadata::File(meta)) => match meta {
-                FileMeta::DownloadFailed | FileMeta::LoadFailed => 1,
-                FileMeta::Downloaded => 12,
+                FileMeta::Downloading
+                | FileMeta::DownloadFailed
+                | FileMeta::Downloaded
+                | FileMeta::LoadFailed
+                | FileMeta::Loading => 1,
+                FileMeta::Loaded => IMAGE_HEIGHT,
             },
         },
         FileKind::Video => 1,
@@ -106,7 +113,7 @@ fn render_message(
         timestamp,
         ")".into(),
     ];
-    if message.info.is_read {
+    if message.info.read_by >= 1 {
         header.push(" ✓".into());
     }
     let sender_widget = Line::from_iter(header).bold();
@@ -168,6 +175,45 @@ fn render_message(
                         .unwrap();
                 }
                 Some(Metadata::File(meta)) => match meta {
+                    FileMeta::Downloaded => {
+                        Paragraph::new(format!("🔗 {} ✓", data.path)).render(media_area, buf);
+
+                        if let FileKind::Image | FileKind::Sticker = data.kind {
+                            app.tx
+                                .send(AppInput::App(AppEvent::LoadFilePreview(
+                                    message.info.id.clone(),
+                                )))
+                                .unwrap();
+
+                            // Immediatly change the state to loading so that we don't load again
+
+                            // let binding = data.path.to_string();
+                            // let image_path = std::path::Path::new(&binding);
+                            //
+                            // let image_res =
+                            //     image::ImageReader::open(app.media_path.join(image_path))
+                            //         .unwrap()
+                            //         .decode();
+                            //
+                            // if let Ok(image_src) = image_res {
+                            //     let mut img = app.picker.new_resize_protocol(image_src);
+                            //     StatefulImage::default().render(media_area, buf, &mut img);
+                            //
+                            //     app.image_cache.insert(data.path.clone(), img);
+                            // } else {
+                            //     app.tx
+                            //         .send(AppInput::App(AppEvent::SetFileState(
+                            //             message.info.id.clone(),
+                            //             FileMeta::LoadFailed,
+                            //         )))
+                            //         .unwrap();
+                            // }
+                        }
+                    }
+                    FileMeta::Downloading => {
+                        Paragraph::new(format!("🔗 {} downloading", data.path))
+                            .render(media_area, buf);
+                    }
                     FileMeta::DownloadFailed => {
                         Paragraph::new(format!("🔗 Failed to download {}", data.path))
                             .render(media_area, buf);
@@ -176,32 +222,39 @@ fn render_message(
                         Paragraph::new(format!("🔗 Failed to load {}", data.path))
                             .render(media_area, buf);
                     }
-                    FileMeta::Downloaded => match data.kind {
+                    FileMeta::Loading => {
+                        info!("Rendering loading for {}", &message.info.id);
+                        Paragraph::new(format!("🔗 {} loading", data.path)).render(media_area, buf);
+                    }
+                    FileMeta::Loaded => match data.kind {
                         FileKind::Image | FileKind::Sticker => {
                             if let Some(image) = app.image_cache.get_mut(&data.path) {
-                                StatefulImage::default().render(media_area, buf, image);
+                                // Paragraph::new(format!("🔗 {} PREVIEWWW", data.path))
+                                //     .render(media_area, buf);
+                                Image::new(image).render(media_area, buf);
                             } else {
-                                let binding = data.path.to_string();
-                                let image_path = std::path::Path::new(&binding);
-
-                                let image_res =
-                                    image::ImageReader::open(app.media_path.join(image_path))
-                                        .unwrap()
-                                        .decode();
-
-                                if let Ok(image_src) = image_res {
-                                    let mut img = app.picker.new_resize_protocol(image_src);
-                                    StatefulImage::default().render(media_area, buf, &mut img);
-
-                                    app.image_cache.insert(data.path.clone(), img);
-                                } else {
-                                    app.tx
-                                        .send(AppInput::App(AppEvent::SetFileState(
-                                            message.info.id.clone(),
-                                            FileMeta::LoadFailed,
-                                        )))
-                                        .unwrap();
-                                }
+                                panic!("Image not found in cache");
+                                // let binding = data.path.to_string();
+                                // let image_path = std::path::Path::new(&binding);
+                                //
+                                // let image_res =
+                                //     image::ImageReader::open(app.media_path.join(image_path))
+                                //         .unwrap()
+                                //         .decode();
+                                //
+                                // if let Ok(image_src) = image_res {
+                                //     let mut img = app.picker.new_resize_protocol(image_src);
+                                //     StatefulImage::default().render(media_area, buf, &mut img);
+                                //
+                                //     app.image_cache.insert(data.path.clone(), img);
+                                // } else {
+                                //     app.tx
+                                //         .send(AppInput::App(AppEvent::SetFileState(
+                                //             message.info.id.clone(),
+                                //             FileMeta::LoadFailed,
+                                //         )))
+                                //         .unwrap();
+                                // }
                             }
                         }
                         FileKind::Video | FileKind::Audio | FileKind::Document => {
@@ -253,6 +306,12 @@ pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<(
     if items.is_empty() {
         app.message_list_state.select(None);
         return Some(());
+    }
+
+    if let Some(idx) = app.message_list_state.selected {
+        if idx >= items.len() {
+            app.message_list_state.selected = Some(items.len() - 1);
+        }
     }
 
     let width = list_area.width as isize;
