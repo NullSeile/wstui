@@ -11,7 +11,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Style, Stylize},
     text::Line,
-    widgets::{Block, Paragraph, StatefulWidget, Widget},
+    widgets::{Block, Borders, Paragraph, StatefulWidget, Widget},
 };
 use ratatui_image::StatefulImage;
 use textwrap;
@@ -115,7 +115,7 @@ fn render_message(
     let sender_name = app.contact_name(&message.info.sender);
 
     let mut header = vec![
-        sender_name.to_string().into(),
+        sender_name.to_string().bold(),
         " (".into(),
         timestamp,
         ")".into(),
@@ -123,7 +123,10 @@ fn render_message(
     if message.info.read_by >= 1 {
         header.push(" ✓".into());
     }
-    let sender_widget = Line::from_iter(header).alignment(alignment).bold();
+    header.push(" ".into());
+    let msg_block = Block::default().borders(Borders::NONE).title(header);
+
+    // let sender_widget = Line::from_iter(header).alignment(alignment).bold();
 
     let quoted_text = message
         .info
@@ -142,7 +145,8 @@ fn render_message(
         }
     });
 
-    let msg_area = area;
+    let msg_area = msg_block.inner(area);
+    // let msg_area = area;
     // let msg_area = if message.info.is_from_me {
     //     let [_, b] = Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)])
     //         .areas(area);
@@ -153,14 +157,19 @@ fn render_message(
     //     a
     // };
 
-    let [sender_area, quoted_area, content_area] = Layout::vertical([
-        Constraint::Length(1),
+    // let [sender_area, quoted_area, content_area] = Layout::vertical([
+    //     Constraint::Length(1),
+    //     Constraint::Length(if quote_widget.is_some() { 1 } else { 0 }),
+    //     Constraint::Min(1),
+    // ])
+    let [quoted_area, content_area] = Layout::vertical([
         Constraint::Length(if quote_widget.is_some() { 1 } else { 0 }),
         Constraint::Min(1),
     ])
     .areas(msg_area);
 
-    sender_widget.render(sender_area, buf);
+    msg_block.render(area, buf);
+    // sender_widget.render(sender_area, buf);
     if let Some(quoted_widget) = quote_widget {
         quoted_widget.render(quoted_area, buf);
     }
@@ -278,6 +287,7 @@ pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<(
 
     let block = Block::bordered()
         .title(format!("Chat with {}", app.contact_name(chat_jid)))
+        .title_bottom(format!("{:?}", app.key_buffer))
         .border_style(Style::default().fg(
             if let SelectedWidget::MessageList = app.selected_widget {
                 ratatui::style::Color::Green
@@ -303,6 +313,20 @@ pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<(
     if items.is_empty() {
         app.message_list_state.select(None);
         return Some(());
+    }
+
+    if app.message_list_state.selected.is_none()
+        && app.message_list_state.selected_message.is_some()
+    {
+        let selected_message = app.message_list_state.selected_message.clone().unwrap();
+        if let Some(idx) = items
+            .iter()
+            .position(|item| item.info.id == selected_message)
+        {
+            app.message_list_state.select(Some(idx));
+        } else {
+            app.message_list_state.select(None);
+        }
     }
 
     if let Some(idx) = app.message_list_state.selected {
@@ -467,13 +491,18 @@ pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<(
 pub struct MessageListState {
     pub selected: Option<usize>,
     pub offset: usize,
-    pub selected_message: Option<wr::MessageId>,
+    selected_message: Option<wr::MessageId>,
     pub update_selected: bool,
 }
 
 impl MessageListState {
     pub fn get_selected_message(&self) -> Option<wr::MessageId> {
         self.selected_message.clone()
+    }
+    pub fn set_selected_message(&mut self, msg_id: wr::MessageId) {
+        self.selected_message = Some(msg_id);
+        self.selected = None;
+        self.update_selected = false;
     }
 }
 

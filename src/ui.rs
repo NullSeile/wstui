@@ -16,7 +16,7 @@ use whatsrust as wr;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     if let SelectedWidget::MessageView = app.selected_widget {
-        let msg_id = app.message_list_state.selected_message.clone().unwrap();
+        let msg_id = app.message_list_state.get_selected_message().unwrap();
 
         let block = Block::default()
             .title("Message")

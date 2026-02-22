@@ -10,7 +10,7 @@ pub mod ui;
 pub mod vim;
 
 use db::DatabaseHandler;
-use log::{error, info};
+use log::{error, info, warn};
 use message_list::MessageListState;
 use message_list::{IMAGE_HEIGHT, IMAGE_WIDTH};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -111,6 +111,48 @@ pub enum SelectedWidget {
     MessageView,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Key {
+    pub code: KeyCode,
+    pub modifiers: KeyModifiers,
+}
+impl Key {
+    pub fn c(c: char) -> Self {
+        if c.is_ascii_uppercase() {
+            Self {
+                code: KeyCode::Char(c),
+                modifiers: KeyModifiers::SHIFT,
+            }
+        } else {
+            Self {
+                code: KeyCode::Char(c),
+                modifiers: KeyModifiers::NONE,
+            }
+        }
+    }
+
+    pub fn k(c: KeyCode) -> Self {
+        Self {
+            code: c,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    pub fn ctrl(c: char) -> Self {
+        Self {
+            code: KeyCode::Char(c),
+            modifiers: KeyModifiers::CONTROL,
+        }
+    }
+
+    pub fn ctrl_shift(c: char) -> Self {
+        Self {
+            code: KeyCode::Char(c),
+            modifiers: KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        }
+    }
+}
+
 pub struct App<'a> {
     pub db_handler: DatabaseHandler,
     pub media_path: &'a Path,
@@ -137,6 +179,9 @@ pub struct App<'a> {
     pub picker: Arc<Mutex<Picker>>,
 
     pub selected_widget: SelectedWidget,
+
+    pub key_buffer: Vec<Key>,
+    pub key_sequence_active: bool,
 
     pub show_logs: bool,
 
@@ -183,6 +228,10 @@ impl Default for App<'_> {
             quoting_message: None,
             picker: Arc::new(Mutex::new(picker)),
             selected_widget: SelectedWidget::ChatList,
+
+            key_buffer: Vec::new(),
+            key_sequence_active: false,
+
             show_logs: false,
             vim: Vim::new(vim::Mode::Insert),
             input_border: vim::Mode::Insert.block(),
@@ -450,6 +499,32 @@ impl App<'_> {
         wr::disconnect();
     }
 
+    fn key_matches(&mut self, expected: &[Key]) -> bool {
+        if self.key_buffer.len() == expected.len()
+            && self
+                .key_buffer
+                .iter()
+                .rev()
+                .zip(expected.iter().rev())
+                .all(|(a, b)| a == b)
+        {
+            self.key_buffer.clear();
+            return true;
+        }
+
+        if self.key_buffer.len() < expected.len()
+            && self
+                .key_buffer
+                .iter()
+                .rev()
+                .zip(expected.iter().rev())
+                .all(|(a, b)| a == b)
+        {
+            self.key_sequence_active = true;
+        }
+        false
+    }
+
     fn db_init(&mut self) {
         self.db_handler.init();
 
@@ -477,22 +552,38 @@ impl App<'_> {
 
     fn on_event(&mut self, event: Event) {
         // Handle widget transitions
-        if let Event::Key(key) = event {
-            if key.kind == KeyEventKind::Press {
-                if key.code == KeyCode::Char('q') && key.modifiers == KeyModifiers::CONTROL {
+        if let Event::Key(key_event) = event {
+            if key_event.kind == KeyEventKind::Press {
+                self.key_sequence_active = false;
+
+                let key = Key {
+                    code: key_event.code,
+                    modifiers: key_event.modifiers,
+                };
+                if key == Key::k(KeyCode::Esc) && self.key_buffer.len() > 0 {
+                    self.key_buffer.clear();
+                    return;
+                } else {
+                    self.key_buffer.push(key);
+                }
+
+                warn!("Key event: {:?}, buffer: {:?}", key_event, self.key_buffer);
+
+                if self.key_matches(&[Key::ctrl('q')]) {
                     self.db_handler.stop();
                     self.should_quit = true;
                     return;
                 }
 
-                if key.code == KeyCode::Char('l')
-                    && key.modifiers == KeyModifiers::CONTROL | KeyModifiers::SHIFT
-                {
+                if self.key_matches(&[Key::ctrl_shift('l')]) {
                     self.show_logs = !self.show_logs;
                     return;
                 }
 
-                if key.code == KeyCode::Char('p') && key.modifiers == KeyModifiers::CONTROL {
+                // if key_event.code == KeyCode::Char('p')
+                //     && key_event.modifiers == KeyModifiers::CONTROL
+                // {
+                if self.key_matches(&[Key::ctrl('p')]) {
                     let next = {
                         let mut picker = self.picker.lock().unwrap();
                         let current = picker.protocol_type();
@@ -525,43 +616,51 @@ impl App<'_> {
 
                 match self.selected_widget {
                     SelectedWidget::ChatList => {
-                        if key.code == KeyCode::Char('l') && key.modifiers == KeyModifiers::CONTROL
-                        {
+                        // if key_event.code == KeyCode::Char('l')
+                        //     && key_event.modifiers == KeyModifiers::CONTROL
+                        // {
+                        if self.key_matches(&[Key::ctrl('l')]) {
                             self.selected_widget = SelectedWidget::MessageList;
                             self.input_widget.select_all();
                             return;
                         }
                     }
                     SelectedWidget::Input => {
-                        if key.code == KeyCode::Char('k') && key.modifiers == KeyModifiers::CONTROL
-                        {
+                        // if key_event.code == KeyCode::Char('k')
+                        //     && key_event.modifiers == KeyModifiers::CONTROL
+                        // {
+                        if self.key_matches(&[Key::ctrl('k')]) {
                             self.selected_widget = SelectedWidget::MessageList;
                             return;
                         }
-                        if key.code == KeyCode::Char('h') && key.modifiers == KeyModifiers::CONTROL
-                        {
+                        // if key_event.code == KeyCode::Char('h')
+                        //     && key_event.modifiers == KeyModifiers::CONTROL
+                        // {
+                        if self.key_matches(&[Key::ctrl('h')]) {
                             self.selected_widget = SelectedWidget::ChatList;
                             return;
                         }
                     }
                     SelectedWidget::MessageList => {
-                        if key.code == KeyCode::Char('j') && key.modifiers == KeyModifiers::CONTROL
-                        {
+                        // if key_event.code == KeyCode::Char('j')
+                        //     && key_event.modifiers == KeyModifiers::CONTROL
+                        // {
+                        if self.key_matches(&[Key::ctrl('j')]) {
                             self.selected_widget = SelectedWidget::Input;
                             return;
                         }
-                        if key.code == KeyCode::Char('h') && key.modifiers == KeyModifiers::CONTROL
-                        {
+                        // if key_event.code == KeyCode::Char('h')
+                        //     && key_event.modifiers == KeyModifiers::CONTROL
+                        // {
+                        if self.key_matches(&[Key::ctrl('h')]) {
                             self.selected_widget = SelectedWidget::ChatList;
                             return;
                         }
                     }
                     SelectedWidget::MessageView => {
-                        if let Event::Key(key) = event {
-                            if key.kind == KeyEventKind::Press && key.code == KeyCode::Esc {
-                                self.selected_widget = SelectedWidget::MessageList;
-                                return;
-                            }
+                        if self.key_matches(&[Key::k(KeyCode::Esc)]) {
+                            self.selected_widget = SelectedWidget::MessageList;
+                            return;
                         }
                     }
                 }
@@ -582,15 +681,26 @@ impl App<'_> {
                 // self.message_list_on_event(&event);
             }
         }
+
+        if let Event::Key(_) = event {
+            if self.key_sequence_active == false {
+                self.key_buffer.clear();
+            }
+        }
     }
 
     fn input_on_event(&mut self, event: &Event) {
-        if let Event::Key(key) = *event {
-            if key.code == KeyCode::Char('r') && key.modifiers == KeyModifiers::CONTROL {
+        if let Event::Key(key) = *event
+            && key.kind == KeyEventKind::Press
+        {
+            // if key.code == KeyCode::Char('r') && key.modifiers == KeyModifiers::CONTROL {
+            if self.key_matches(&[Key::ctrl('r')]) {
                 self.quoting_message = None;
                 return;
             }
-            if key.code == KeyCode::Char('x') && key.modifiers == KeyModifiers::CONTROL {
+
+            // if key.code == KeyCode::Char('x') && key.modifiers == KeyModifiers::CONTROL {
+            if self.key_matches(&[Key::ctrl('x')]) {
                 if let Some(c) = self.selected_chat_jid.clone() {
                     let text = self.input_widget.lines().join("\n");
                     wr::send_message(&c, text.as_str(), self.quoting_message.as_ref());
@@ -598,14 +708,6 @@ impl App<'_> {
                     self.input_widget.delete_next_char();
                     self.quoting_message = None;
                 }
-                return;
-            }
-            if key.code == KeyCode::Char('k') && key.modifiers == KeyModifiers::CONTROL {
-                self.selected_widget = SelectedWidget::MessageList;
-                return;
-            }
-            if key.code == KeyCode::Char('h') && key.modifiers == KeyModifiers::CONTROL {
-                self.selected_widget = SelectedWidget::ChatList;
                 return;
             }
         }
@@ -627,82 +729,89 @@ impl App<'_> {
     fn chat_list_on_event(&mut self, event: &Event) {
         if let Event::Key(key) = event {
             if key.kind == KeyEventKind::Press {
-                match key.code {
-                    KeyCode::Char('j') | KeyCode::Char('k') => {
-                        if key.code == KeyCode::Char('j') {
-                            self.chat_list_state.select_next();
-                        } else if key.code == KeyCode::Char('k') {
-                            self.chat_list_state.select_previous();
+                let mut moved = false;
+                if self.key_matches(&[Key::c('j')]) {
+                    self.chat_list_state.select_next();
+                    moved = true;
+                } else if self.key_matches(&[Key::c('k')]) {
+                    self.chat_list_state.select_previous();
+                    moved = true;
+                }
+                if moved {
+                    // Bound the selected index to the number of chats
+                    let len = self.sorted_chats.len();
+                    if len == 0 {
+                        self.chat_list_state.select(None);
+                        return;
+                    } else if let Some(selected) = self.chat_list_state.selected() {
+                        if selected >= len {
+                            self.chat_list_state.select(Some(len.saturating_sub(1)));
                         }
-                        // Bound the selected index to the number of chats
-                        let len = self.sorted_chats.len();
-                        if len == 0 {
-                            self.chat_list_state.select(None);
-                            return;
-                        } else if let Some(selected) = self.chat_list_state.selected() {
-                            if selected >= len {
-                                self.chat_list_state.select(Some(len.saturating_sub(1)));
-                            }
-                        }
+                    }
 
-                        self.selected_chat_jid = self
-                            .chat_list_state
-                            .selected()
-                            .map(|index| self.sorted_chats[index].jid.clone());
+                    self.selected_chat_jid = self
+                        .chat_list_state
+                        .selected()
+                        .map(|index| self.sorted_chats[index].jid.clone());
 
-                        self.sort_chat_messages(self.selected_chat_jid.as_ref().unwrap().clone());
+                    self.sort_chat_messages(self.selected_chat_jid.as_ref().unwrap().clone());
+                    self.message_list_state.reset();
+                }
+
+                if self.key_matches(&[Key::k(KeyCode::Enter)]) {
+                    if let Some(index) = self.chat_list_state.selected() {
+                        let chat_jid = self.sorted_chats[index].jid.clone();
+                        self.selected_chat_jid = Some(chat_jid);
                         self.message_list_state.reset();
+                        self.selected_widget = SelectedWidget::Input;
                     }
-                    KeyCode::Enter => {
-                        if let Some(index) = self.chat_list_state.selected() {
-                            let chat_jid = self.sorted_chats[index].jid.clone();
-                            self.selected_chat_jid = Some(chat_jid);
-                            self.message_list_state.reset();
-                            self.selected_widget = SelectedWidget::Input;
-                        }
-                    }
-                    _ => {}
                 }
             }
         }
     }
 
     fn message_list_on_event(&mut self, event: &Event) {
-        if let Event::Key(key) = event {
-            if key.kind == KeyEventKind::Press {
-                if key.code == KeyCode::Char('e') && key.modifiers == KeyModifiers::CONTROL {
-                    self.message_list_state.offset =
-                        self.message_list_state.offset.saturating_sub(1);
+        if let Event::Key(key) = event
+            && key.kind == KeyEventKind::Press
+        {
+            if self.key_matches(&[Key::ctrl('e')]) {
+                self.message_list_state.offset = self.message_list_state.offset.saturating_sub(1);
+            }
+            if self.key_matches(&[Key::ctrl('y')]) {
+                self.message_list_state.offset = self.message_list_state.offset.saturating_add(1);
+            }
+            if self.key_matches(&[Key::c('g'), Key::c('q')]) {
+                if let Some(msg_id) = &self.message_list_state.get_selected_message()
+                    && let Some(msg) = self.messages.get(msg_id)
+                    && let Some(ref quote_id) = msg.info.quote_id
+                {
+                    self.message_list_state
+                        .set_selected_message(quote_id.clone());
                 }
-                if key.code == KeyCode::Char('y') && key.modifiers == KeyModifiers::CONTROL {
-                    self.message_list_state.offset =
-                        self.message_list_state.offset.saturating_add(1);
+                return;
+            }
+
+            if self.key_matches(&[Key::c('k')]) {
+                self.message_list_state.select_next();
+            } else if self.key_matches(&[Key::c('j')]) {
+                self.message_list_state.select_previous();
+            } else if self.key_matches(&[Key::c('G')]) {
+                self.message_list_state.select_first();
+            } else if self.key_matches(&[Key::c('g'), Key::c('g')]) {
+                self.message_list_state.select_last();
+            } else if self.key_matches(&[Key::ctrl('r')]) {
+                if let Some(msg_id) = &self.message_list_state.get_selected_message() {
+                    if let Some(msg) = self.messages.get(msg_id) {
+                        self.quoting_message = Some(msg.clone());
+                        self.selected_widget = SelectedWidget::Input;
+                    }
                 }
-                match key.code {
-                    KeyCode::Char('j') => {
-                        self.message_list_state.select_previous();
-                    }
-                    KeyCode::Char('k') => {
-                        self.message_list_state.select_next();
-                    }
-                    KeyCode::Char('r') => {
-                        if let Some(msg_id) = &self.message_list_state.selected_message {
-                            if let Some(msg) = self.messages.get(msg_id) {
-                                self.quoting_message = Some(msg.clone());
-                                self.selected_widget = SelectedWidget::Input;
-                            }
-                        }
-                    }
-                    KeyCode::Enter => {
-                        if self.message_list_state.selected_message.is_some() {
-                            self.selected_widget = SelectedWidget::MessageView;
-                        }
-                    }
-                    KeyCode::Esc => {
-                        self.message_list_state.reset();
-                    }
-                    _ => {}
+            } else if self.key_matches(&[Key::k(KeyCode::Enter)]) {
+                if self.message_list_state.get_selected_message().is_some() {
+                    self.selected_widget = SelectedWidget::MessageView;
                 }
+            } else if self.key_matches(&[Key::k(KeyCode::Esc)]) {
+                self.message_list_state.reset();
             }
         }
     }
