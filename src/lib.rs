@@ -580,9 +580,6 @@ impl App<'_> {
                     return;
                 }
 
-                // if key_event.code == KeyCode::Char('p')
-                //     && key_event.modifiers == KeyModifiers::CONTROL
-                // {
                 if self.key_matches(&[Key::ctrl('p')]) {
                     let next = {
                         let mut picker = self.picker.lock().unwrap();
@@ -616,9 +613,6 @@ impl App<'_> {
 
                 match self.selected_widget {
                     SelectedWidget::ChatList => {
-                        // if key_event.code == KeyCode::Char('l')
-                        //     && key_event.modifiers == KeyModifiers::CONTROL
-                        // {
                         if self.key_matches(&[Key::ctrl('l')]) {
                             self.selected_widget = SelectedWidget::MessageList;
                             self.input_widget.select_all();
@@ -626,32 +620,20 @@ impl App<'_> {
                         }
                     }
                     SelectedWidget::Input => {
-                        // if key_event.code == KeyCode::Char('k')
-                        //     && key_event.modifiers == KeyModifiers::CONTROL
-                        // {
                         if self.key_matches(&[Key::ctrl('k')]) {
                             self.selected_widget = SelectedWidget::MessageList;
                             return;
                         }
-                        // if key_event.code == KeyCode::Char('h')
-                        //     && key_event.modifiers == KeyModifiers::CONTROL
-                        // {
                         if self.key_matches(&[Key::ctrl('h')]) {
                             self.selected_widget = SelectedWidget::ChatList;
                             return;
                         }
                     }
                     SelectedWidget::MessageList => {
-                        // if key_event.code == KeyCode::Char('j')
-                        //     && key_event.modifiers == KeyModifiers::CONTROL
-                        // {
                         if self.key_matches(&[Key::ctrl('j')]) {
                             self.selected_widget = SelectedWidget::Input;
                             return;
                         }
-                        // if key_event.code == KeyCode::Char('h')
-                        //     && key_event.modifiers == KeyModifiers::CONTROL
-                        // {
                         if self.key_matches(&[Key::ctrl('h')]) {
                             self.selected_widget = SelectedWidget::ChatList;
                             return;
@@ -677,9 +659,7 @@ impl App<'_> {
             SelectedWidget::Input => {
                 self.input_on_event(&event);
             }
-            SelectedWidget::MessageView => {
-                // self.message_list_on_event(&event);
-            }
+            SelectedWidget::MessageView => {}
         }
 
         if let Event::Key(_) = event {
@@ -693,13 +673,11 @@ impl App<'_> {
         if let Event::Key(key) = *event
             && key.kind == KeyEventKind::Press
         {
-            // if key.code == KeyCode::Char('r') && key.modifiers == KeyModifiers::CONTROL {
             if self.key_matches(&[Key::ctrl('r')]) {
                 self.quoting_message = None;
                 return;
             }
 
-            // if key.code == KeyCode::Char('x') && key.modifiers == KeyModifiers::CONTROL {
             if self.key_matches(&[Key::ctrl('x')]) {
                 if let Some(c) = self.selected_chat_jid.clone() {
                     let text = self.input_widget.lines().join("\n");
@@ -799,7 +777,7 @@ impl App<'_> {
                 self.message_list_state.select_first();
             } else if self.key_matches(&[Key::c('g'), Key::c('g')]) {
                 self.message_list_state.select_last();
-            } else if self.key_matches(&[Key::ctrl('r')]) {
+            } else if self.key_matches(&[Key::c('r')]) {
                 if let Some(msg_id) = &self.message_list_state.get_selected_message() {
                     if let Some(msg) = self.messages.get(msg_id) {
                         self.quoting_message = Some(msg.clone());
