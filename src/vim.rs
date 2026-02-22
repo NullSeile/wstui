@@ -11,7 +11,7 @@ use std::fmt;
 // use std::fs;
 // use std::io;
 // use std::io::BufRead;
-use tui_textarea::{CursorMove, Input, Key, Scrolling, TextArea};
+use ratatui_textarea::{CursorMove, Input, Key, Scrolling, TextArea};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {

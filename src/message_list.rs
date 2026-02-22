@@ -86,6 +86,13 @@ fn render_message(
         buf.set_style(area, style);
     }
 
+    let alignment = ratatui::layout::Alignment::Left;
+    // let alignment = if message.info.is_from_me {
+    //     ratatui::layout::Alignment::Right
+    // } else {
+    //     ratatui::layout::Alignment::Left
+    // };
+
     let timestamp = {
         let local_time: DateTime<Local> = DateTime::from_timestamp(message.info.timestamp, 0)
             .unwrap()
@@ -116,7 +123,7 @@ fn render_message(
     if message.info.read_by >= 1 {
         header.push(" ✓".into());
     }
-    let sender_widget = Line::from_iter(header).bold();
+    let sender_widget = Line::from_iter(header).alignment(alignment).bold();
 
     let quoted_text = message
         .info
@@ -127,7 +134,7 @@ fn render_message(
     let quote_widget = message.info.quote_id.as_ref().map(|_quote_id| {
         let quoted_text = quoted_text.unwrap_or_else(|| "not found".into());
 
-        let line = Line::from(format!("> {quoted_text}"));
+        let line = Line::from(format!("> {quoted_text}")).alignment(alignment);
         if is_selected {
             line.dark_gray()
         } else {
@@ -135,12 +142,23 @@ fn render_message(
         }
     });
 
+    let msg_area = area;
+    // let msg_area = if message.info.is_from_me {
+    //     let [_, b] = Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)])
+    //         .areas(area);
+    //     b
+    // } else {
+    //     let [a, _] = Layout::horizontal([Constraint::Percentage(70), Constraint::Percentage(30)])
+    //         .areas(area);
+    //     a
+    // };
+
     let [sender_area, quoted_area, content_area] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(if quote_widget.is_some() { 1 } else { 0 }),
         Constraint::Min(1),
     ])
-    .areas(area);
+    .areas(msg_area);
 
     sender_widget.render(sender_area, buf);
     if let Some(quoted_widget) = quote_widget {
@@ -153,7 +171,9 @@ fn render_message(
                 .iter()
                 .map(|line| Line::raw(line.to_string()))
                 .collect::<Vec<_>>();
-            Paragraph::new(lines).render(content_area, buf);
+            Paragraph::new(lines)
+                .alignment(alignment)
+                .render(content_area, buf);
         }
         wr::MessageContent::File(data) => {
             let content_height = file_content_height(&message.info.id, data, app);
@@ -166,7 +186,9 @@ fn render_message(
 
             match app.metadata.get(&message.info.id) {
                 None => {
-                    Paragraph::new(format!("🔗 {} +", data.path)).render(media_area, buf);
+                    Paragraph::new(format!("🔗 {} +", data.path))
+                        .alignment(alignment)
+                        .render(media_area, buf);
                     app.tx
                         .send(AppInput::App(AppEvent::DownloadFile(
                             message.info.id.clone(),
@@ -176,7 +198,9 @@ fn render_message(
                 }
                 Some(Metadata::File(meta)) => match meta {
                     FileMeta::Downloaded => {
-                        Paragraph::new(format!("🔗 {} ✓", data.path)).render(media_area, buf);
+                        Paragraph::new(format!("🔗 {} ✓", data.path))
+                            .alignment(alignment)
+                            .render(media_area, buf);
 
                         if let FileKind::Image | FileKind::Sticker = data.kind {
                             let already_loading = matches!(
@@ -194,32 +218,43 @@ fn render_message(
                     }
                     FileMeta::Downloading => {
                         Paragraph::new(format!("🔗 {} downloading", data.path))
+                            .alignment(alignment)
                             .render(media_area, buf);
                     }
                     FileMeta::DownloadFailed => {
                         Paragraph::new(format!("🔗 Failed to download {}", data.path))
+                            .alignment(alignment)
                             .render(media_area, buf);
                     }
                     FileMeta::LoadFailed => {
                         Paragraph::new(format!("🔗 Failed to load {}", data.path))
+                            .alignment(alignment)
                             .render(media_area, buf);
                     }
                     FileMeta::Loading => {
                         info!("Rendering loading for {}", &message.info.id);
-                        Paragraph::new(format!("🔗 {} loading", data.path)).render(media_area, buf);
+                        Paragraph::new(format!("🔗 {} loading", data.path))
+                            .alignment(alignment)
+                            .render(media_area, buf);
                     }
                     FileMeta::Loaded => match data.kind {
                         FileKind::Image | FileKind::Sticker => {
                             if !render_image || app.image_cache.get_mut(&data.path).is_none() {
-                                Paragraph::new("🖼").render(media_area, buf);
+                                Paragraph::new("🖼")
+                                    .alignment(alignment)
+                                    .render(media_area, buf);
                             } else if let Some(image) = app.image_cache.get_mut(&data.path) {
                                 StatefulImage::default().render(media_area, buf, image);
                             } else {
-                                Paragraph::new("🖼").render(media_area, buf);
+                                Paragraph::new("🖼")
+                                    .alignment(alignment)
+                                    .render(media_area, buf);
                             }
                         }
                         FileKind::Video | FileKind::Audio | FileKind::Document => {
-                            Paragraph::new(format!("🔗 {} ✓", data.path)).render(media_area, buf);
+                            Paragraph::new(format!("🔗 {} ✓", data.path))
+                                .alignment(alignment)
+                                .render(media_area, buf);
                         }
                     },
                 },
@@ -230,7 +265,9 @@ fn render_message(
                     .iter()
                     .map(|line| Line::raw(line.to_string()))
                     .collect::<Vec<_>>();
-                Paragraph::new(lines).render(caption_area, buf);
+                Paragraph::new(lines)
+                    .alignment(alignment)
+                    .render(caption_area, buf);
             }
         }
     };

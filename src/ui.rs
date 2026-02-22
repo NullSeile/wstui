@@ -5,12 +5,13 @@ use crate::{
 use log::info;
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
+    layout::{Alignment, Constraint, Layout, Rect},
     style::{Style, Stylize},
+    text::{Line, Span},
     widgets::{Block, Borders, List, Paragraph},
 };
 use ratatui_image::{Resize, StatefulImage};
-use tui_logger::TuiLoggerWidget;
+use tui_logger::{ExtLogRecord, LogFormatter, TuiLoggerWidget};
 use whatsrust as wr;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -88,9 +89,48 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 }
 
+struct MyLogFormatter {}
+impl LogFormatter for MyLogFormatter {
+    fn min_width(&self) -> u16 {
+        4
+    }
+    fn format(&self, _width: usize, evt: &ExtLogRecord) -> Vec<Line<'_>> {
+        let mut lines = vec![];
+        match evt.level {
+            log::Level::Error => {
+                let st = Style::new().red().bold();
+                let sp = Span::styled("======", st);
+                let mayday = Span::from(" MAYDAY MAYDAY ".to_string());
+                let sp2 = Span::styled("======", st);
+                lines.push(Line::from(vec![sp, mayday, sp2]).alignment(Alignment::Center));
+                lines.push(
+                    Line::from(format!("{}: {}", evt.level, evt.msg()))
+                        .alignment(Alignment::Center),
+                );
+            }
+            _ => {
+                lines.push(Line::from(format!("{}: {}", evt.level, evt.msg())));
+            }
+        };
+
+        match evt.level {
+            log::Level::Error => {
+                let st = Style::new().blue().bold();
+                let sp = Span::styled("======", st);
+                let mayday = Span::from(" MAYDAY SEEN ? ".to_string());
+                let sp2 = Span::styled("======", st);
+                lines.push(Line::from(vec![sp, mayday, sp2]).alignment(Alignment::Center));
+            }
+            _ => {}
+        };
+        lines
+    }
+}
+
 fn render_logs(frame: &mut Frame, area: Rect) {
-    let log_widget =
-        TuiLoggerWidget::default().block(Block::default().title("Logs").borders(Borders::ALL));
+    let log_widget = TuiLoggerWidget::default()
+        .formatter(Box::new(MyLogFormatter {}))
+        .block(Block::default().title("Logs").borders(Borders::ALL));
     frame.render_widget(log_widget, area);
 }
 

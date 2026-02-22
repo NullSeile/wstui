@@ -19,7 +19,7 @@ use ratatui::widgets::{Block, ListState};
 use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::protocol::StatefulProtocol;
 use ratatui_image::{Resize, ResizeEncodeRender};
-use tui_textarea::TextArea;
+use ratatui_textarea::TextArea;
 use vim::Vim;
 use whatsrust as wr;
 
