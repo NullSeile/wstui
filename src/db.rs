@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use log::info;
+use log::debug;
 use rusqlite::Connection;
 use strum::IntoEnumIterator;
 use whatsrust as wr;
@@ -40,7 +40,7 @@ impl DatabaseHandler {
                     chats
                 };
                 if !new_chats.is_empty() {
-                    info!("Saving {} new chats to the database", new_chats.len());
+                    debug!("Saving {} new chats to the database", new_chats.len());
                     let tx = db.transaction().unwrap();
                     {
                         let mut statement = tx
@@ -62,7 +62,7 @@ impl DatabaseHandler {
                     messages
                 };
                 if !messages.is_empty() {
-                    info!("Saving {} new messages to the database", messages.len());
+                    debug!("Saving {} new messages to the database", messages.len());
                     let tx = db.transaction().unwrap();
 
                     {

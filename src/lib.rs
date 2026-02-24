@@ -10,7 +10,7 @@ pub mod ui;
 pub mod vim;
 
 use db::DatabaseHandler;
-use log::{error, info, warn};
+use log::{debug, error, info, trace};
 use message_list::MessageListState;
 use message_list::{IMAGE_HEIGHT, IMAGE_WIDTH};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -20,6 +20,7 @@ use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::protocol::StatefulProtocol;
 use ratatui_image::{Resize, ResizeEncodeRender};
 use ratatui_textarea::TextArea;
+use rfd::FileDialog;
 use vim::Vim;
 use whatsrust as wr;
 
@@ -172,6 +173,7 @@ pub struct App<'a> {
     pub history_sync_percent: Option<u8>,
 
     pub quoting_message: Option<wr::Message>,
+    pub attached_file: Option<(Arc<str>, wr::FileKind)>,
     pub message_list_state: MessageListState,
     pub metadata: HashMap<wr::MessageId, Metadata>,
     pub image_cache: HashMap<Arc<str>, StatefulProtocol>,
@@ -226,6 +228,7 @@ impl Default for App<'_> {
             image_cache: HashMap::new(),
             default_protocol_type,
             quoting_message: None,
+            attached_file: None,
             picker: Arc::new(Mutex::new(picker)),
             selected_widget: SelectedWidget::ChatList,
 
@@ -340,7 +343,7 @@ impl App<'_> {
                         self.metadata
                             .insert(message_id.clone(), Metadata::File(FileMeta::Loaded));
 
-                        info!("Set file preview for message: {:?}", message_id);
+                        trace!("Set file preview for message: {:?}", message_id);
 
                         true
                     }
@@ -442,7 +445,7 @@ impl App<'_> {
                         chat,
                         message_ids,
                     } => {
-                        info!(
+                        debug!(
                             "Received receipt: {:?} for chat: {:?} with messages: {:?}",
                             kind, chat, message_ids
                         );
@@ -504,8 +507,7 @@ impl App<'_> {
             && self
                 .key_buffer
                 .iter()
-                .rev()
-                .zip(expected.iter().rev())
+                .zip(expected.iter())
                 .all(|(a, b)| a == b)
         {
             self.key_buffer.clear();
@@ -516,8 +518,7 @@ impl App<'_> {
             && self
                 .key_buffer
                 .iter()
-                .rev()
-                .zip(expected.iter().rev())
+                .zip(expected.iter())
                 .all(|(a, b)| a == b)
         {
             self.key_sequence_active = true;
@@ -567,7 +568,7 @@ impl App<'_> {
                     self.key_buffer.push(key);
                 }
 
-                warn!("Key event: {:?}, buffer: {:?}", key_event, self.key_buffer);
+                // warn!("Key event: {:?}, buffer: {:?}", key_event, self.key_buffer);
 
                 if self.key_matches(&[Key::ctrl('q')]) {
                     self.db_handler.stop();
@@ -607,7 +608,7 @@ impl App<'_> {
                             }
                         }
                     }
-                    info!("Image protocol: {:?}", next);
+                    debug!("Image protocol: {:?}", next);
                     return;
                 }
 
@@ -673,35 +674,66 @@ impl App<'_> {
         if let Event::Key(key) = *event
             && key.kind == KeyEventKind::Press
         {
-            if self.key_matches(&[Key::ctrl('r')]) {
-                self.quoting_message = None;
-                return;
-            }
-
             if self.key_matches(&[Key::ctrl('x')]) {
                 if let Some(c) = self.selected_chat_jid.clone() {
                     let text = self.input_widget.lines().join("\n");
-                    wr::send_message(&c, text.as_str(), self.quoting_message.as_ref());
+                    let msg = if let Some((path, typ)) = &self.attached_file {
+                        wr::MessageContent::File(wr::FileContent {
+                            kind: typ.clone(),
+                            path: path.clone(),
+                            file_id: "".into(),
+                            caption: Some(text.into()),
+                        })
+                    } else {
+                        wr::MessageContent::Text(text.into())
+                    };
+
+                    wr::send_message(&c, &msg, self.quoting_message.as_ref());
+
                     self.input_widget.select_all();
                     self.input_widget.delete_next_char();
                     self.quoting_message = None;
+                    self.attached_file = None;
                 }
                 return;
             }
+            if self.vim.mode == vim::Mode::Normal {
+                if self.key_matches(&[Key::c(' '), Key::c('r')]) {
+                    self.quoting_message = None;
+                    return;
+                }
+
+                if self.key_matches(&[Key::c(' '), Key::c('a'), Key::c('r')]) {
+                    self.attached_file = None;
+                }
+                if self.key_matches(&[Key::c(' '), Key::c('a'), Key::c('i')]) {
+                    if let Some(path) = FileDialog::new().pick_file() {
+                        self.attached_file =
+                            Some((path.to_str().unwrap().into(), wr::FileKind::Image));
+                    }
+                } else if self.key_matches(&[Key::c(' '), Key::c('a'), Key::c('d')]) {
+                    if let Some(path) = FileDialog::new().pick_file() {
+                        self.attached_file =
+                            Some((path.to_str().unwrap().into(), wr::FileKind::Document));
+                    }
+                }
+            }
         }
 
-        self.vim = match self
-            .vim
-            .transition(event.clone().into(), &mut self.input_widget)
-        {
-            vim::Transition::Mode(mode) if self.vim.mode != mode => {
-                self.input_border = mode.block();
-                self.input_widget.set_cursor_style(mode.cursor_style());
-                Vim::new(mode)
-            }
-            vim::Transition::Nop | vim::Transition::Mode(_) => self.vim.clone(),
-            vim::Transition::Pending(input) => self.vim.with_pending(input),
-        };
+        if !self.key_sequence_active {
+            self.vim = match self
+                .vim
+                .transition(event.clone().into(), &mut self.input_widget)
+            {
+                vim::Transition::Mode(mode) if self.vim.mode != mode => {
+                    self.input_border = mode.block();
+                    self.input_widget.set_cursor_style(mode.cursor_style());
+                    Vim::new(mode)
+                }
+                vim::Transition::Nop | vim::Transition::Mode(_) => self.vim.clone(),
+                vim::Transition::Pending(input) => self.vim.with_pending(input),
+            };
+        }
     }
 
     fn chat_list_on_event(&mut self, event: &Event) {

@@ -2,16 +2,15 @@ use crate::{
     App, SelectedWidget,
     message_list::{get_quoted_text, render_messages},
 };
-use log::info;
+use log::trace;
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Layout, Rect},
+    layout::{Constraint, Layout, Rect},
     style::{Style, Stylize},
-    text::{Line, Span},
     widgets::{Block, Borders, List, Paragraph},
 };
 use ratatui_image::{Resize, StatefulImage};
-use tui_logger::{ExtLogRecord, LogFormatter, TuiLoggerWidget};
+use tui_logger::TuiLoggerWidget;
 use whatsrust as wr;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -41,7 +40,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 wr::MessageContent::File(ref file) => match file.kind {
                     wr::FileKind::Image | wr::FileKind::Sticker => {
                         if let Some(image) = app.image_cache.get_mut(&file.path) {
-                            info!("Rendering image from cache: {}", file.path);
+                            trace!("Rendering image from cache: {}", file.path);
                             frame.render_stateful_widget(
                                 StatefulImage::default().resize(Resize::Scale(None)),
                                 area,
@@ -89,47 +88,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 }
 
-struct MyLogFormatter {}
-impl LogFormatter for MyLogFormatter {
-    fn min_width(&self) -> u16 {
-        4
-    }
-    fn format(&self, _width: usize, evt: &ExtLogRecord) -> Vec<Line<'_>> {
-        let mut lines = vec![];
-        match evt.level {
-            log::Level::Error => {
-                let st = Style::new().red().bold();
-                let sp = Span::styled("======", st);
-                let mayday = Span::from(" MAYDAY MAYDAY ".to_string());
-                let sp2 = Span::styled("======", st);
-                lines.push(Line::from(vec![sp, mayday, sp2]).alignment(Alignment::Center));
-                lines.push(
-                    Line::from(format!("{}: {}", evt.level, evt.msg()))
-                        .alignment(Alignment::Center),
-                );
-            }
-            _ => {
-                lines.push(Line::from(format!("{}: {}", evt.level, evt.msg())));
-            }
-        };
-
-        match evt.level {
-            log::Level::Error => {
-                let st = Style::new().blue().bold();
-                let sp = Span::styled("======", st);
-                let mayday = Span::from(" MAYDAY SEEN ? ".to_string());
-                let sp2 = Span::styled("======", st);
-                lines.push(Line::from(vec![sp, mayday, sp2]).alignment(Alignment::Center));
-            }
-            _ => {}
-        };
-        lines
-    }
-}
-
 fn render_logs(frame: &mut Frame, area: Rect) {
     let log_widget = TuiLoggerWidget::default()
-        .formatter(Box::new(MyLogFormatter {}))
+        .style_trace(Style::new().dark_gray())
+        .style_debug(Style::new().blue())
+        .style_warn(Style::new().yellow())
+        .style_error(Style::new().red().bold())
         .block(Block::default().title("Logs").borders(Borders::ALL));
     frame.render_widget(log_widget, area);
 }
@@ -190,6 +154,26 @@ pub fn render_chats(frame: &mut Frame, app: &mut App, area: Rect) {
             frame.render_widget(
                 Paragraph::new(format!("> {}", get_quoted_text(msg))).dark_gray(),
                 quote_area,
+            );
+        }
+
+        if let Some((path, typ)) = &app.attached_file {
+            let file_type_str = match typ {
+                wr::FileKind::Image => "Image",
+                wr::FileKind::Video => "Video",
+                wr::FileKind::Audio => "Audio",
+                wr::FileKind::Document => "Document",
+                wr::FileKind::Sticker => "Sticker",
+            };
+            let [attach_area, input_areaa] =
+                Layout::vertical([Constraint::Length(1), Constraint::Percentage(100)])
+                    .areas(input_area);
+
+            input_area = input_areaa;
+
+            frame.render_widget(
+                Paragraph::new(format!("🔗 {}: {}", file_type_str, path)).dark_gray(),
+                attach_area,
             );
         }
 

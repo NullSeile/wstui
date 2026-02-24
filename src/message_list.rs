@@ -4,7 +4,7 @@ use std::{
 };
 
 use chrono::{DateTime, Datelike, Local};
-use log::info;
+use log::trace;
 use ratatui::{
     Frame,
     buffer::Buffer,
@@ -241,7 +241,7 @@ fn render_message(
                             .render(media_area, buf);
                     }
                     FileMeta::Loading => {
-                        info!("Rendering loading for {}", &message.info.id);
+                        trace!("Rendering loading for {}", &message.info.id);
                         Paragraph::new(format!("🔗 {} loading", data.path))
                             .alignment(alignment)
                             .render(media_area, buf);

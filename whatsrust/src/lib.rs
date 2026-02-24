@@ -226,7 +226,13 @@ type CEventCallback = extern "C" fn(*const CEvent, *mut c_void);
 unsafe extern "C" {
     fn C_NewClient(db_path: *const c_char);
     fn C_Connect(qr_cb: CQrCallback, data: *mut c_void);
-    fn C_SendMessage(jid: CJID, message: *const c_char, quoted_message: *const CMessageInfo);
+    fn C_SendMessage(
+        jid: CJID,
+        message_type: u8,
+        message_content: *const c_void,
+        quote_id: *const c_char,
+        quote_sender: CJID,
+    );
     fn C_GetContacts() -> CGetContactsResult;
     fn C_Disconnect();
     fn C_PairPhone(phone: *const c_char) -> *const c_char;
@@ -422,35 +428,70 @@ pub fn disconnect() {
     unsafe { C_Disconnect() }
 }
 
-pub fn send_message(jid: &JID, message: &str, quoted_message: Option<&Message>) {
-    let message_c = CString::new(message).unwrap();
-    let jid_c = CJID::from(jid);
+/// Keeps CStrings and C structs alive for the duration of an FFI call.
+/// The inner C structs are boxed so their heap addresses remain stable.
+#[allow(dead_code)]
+enum ContentHolder {
+    Text(CString, Box<CTextMessage>),
+    File(CString, CString, Option<CString>, Box<CFileMessage>),
+}
 
-    if let Some(quoted_message) = quoted_message {
-        let quoted_chat = CJID::from(&quoted_message.info.chat);
-        let quoted_sender = CJID::from(&quoted_message.info.sender);
-        let quoted_id = CString::new(quoted_message.info.id.as_ref()).unwrap();
-
-        let info = CMessageInfo {
-            id: quoted_id.as_ptr(),
-            chat: quoted_chat,
-            sender: quoted_sender,
-            timestamp: quoted_message.info.timestamp,
-            is_from_me: quoted_message.info.is_from_me,
-            quote_id: quoted_message
-                .info
-                .quote_id
+fn build_content_for_ffi(content: &MessageContent) -> (u8, *const c_void, ContentHolder) {
+    match content {
+        MessageContent::Text(text) => {
+            let text_c = CString::new(text.as_ref()).unwrap();
+            let c_text = Box::new(CTextMessage {
+                text: text_c.as_ptr(),
+            });
+            let ptr = &*c_text as *const _ as *const c_void;
+            (
+                MessageType::Text as u8,
+                ptr,
+                ContentHolder::Text(text_c, c_text),
+            )
+        }
+        MessageContent::File(file) => {
+            let path_c = CString::new(file.path.as_ref()).unwrap();
+            let file_id_c = CString::new(file.file_id.as_ref()).unwrap();
+            let caption_c = file
+                .caption
                 .as_ref()
-                .map_or(std::ptr::null(), |q| {
-                    CString::new(q.as_ref()).unwrap().into_raw()
-                }),
-            read_by: quoted_message.info.read_by,
-        };
-
-        unsafe { C_SendMessage(jid_c, message_c.as_ptr(), &info as *const _) }
-    } else {
-        unsafe { C_SendMessage(jid_c, message_c.as_ptr(), std::ptr::null()) }
+                .map(|c| CString::new(c.as_ref()).unwrap());
+            let caption_ptr = caption_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
+            let c_file = Box::new(CFileMessage {
+                kind: file.kind.clone() as u8,
+                path: path_c.as_ptr(),
+                file_id: file_id_c.as_ptr(),
+                caption: caption_ptr,
+            });
+            let ptr = &*c_file as *const _ as *const c_void;
+            (
+                MessageType::File as u8,
+                ptr,
+                ContentHolder::File(path_c, file_id_c, caption_c, c_file),
+            )
+        }
     }
+}
+
+fn quote_to_ffi(quoted: Option<&Message>) -> (CString, *const c_char, CJID) {
+    match quoted {
+        Some(qm) => {
+            let id_c = CString::new(qm.info.id.as_ref()).unwrap();
+            let id_ptr = id_c.as_ptr();
+            let sender = CJID::from(&qm.info.sender);
+            (id_c, id_ptr, sender)
+        }
+        None => (CString::default(), std::ptr::null(), std::ptr::null()),
+    }
+}
+
+pub fn send_message(jid: &JID, content: &MessageContent, quoted_message: Option<&Message>) {
+    let jid_c = CJID::from(jid);
+    let (msg_type, content_ptr, _holder) = build_content_for_ffi(content);
+    let (_quote_id_owner, quote_id, quote_sender) = quote_to_ffi(quoted_message);
+
+    unsafe { C_SendMessage(jid_c, msg_type, content_ptr, quote_id, quote_sender) }
 }
 
 /// Returns all contacts and groups as (JID, display name). Includes LID aliases for contacts.

@@ -112,10 +112,14 @@ import (
 	"fmt"
 	"math"
 	"mime"
+	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"time"
 	"unsafe"
+
+	"google.golang.org/protobuf/proto"
 
 	_ "github.com/mattn/go-sqlite3"
 	"go.mau.fi/whatsmeow"
@@ -151,7 +155,7 @@ func LOG_INFO(msg string, args ...any) {
 	LOG_LEVEL(2, msg, args...)
 }
 func LOG_DEBUG(msg string, args ...any) {
-	LOG_LEVEL(3, msg, args...)
+	LOG_LEVEL(4, msg, args...)
 }
 
 // Logger
@@ -167,7 +171,7 @@ func (l *WrLogger) Infof(msg string, args ...any) {
 	LOG_INFO(msg, args...)
 }
 func (l *WrLogger) Debugf(msg string, args ...any) {
-	// LOG_DEBUG(msg, args...)
+	LOG_DEBUG(msg, args...)
 }
 
 func (l *WrLogger) Sub(module string) waLog.Logger {
@@ -369,60 +373,75 @@ const (
 	FileTypeSticker
 )
 
-func CMessageInfoToGo(cinfo C.MessageInfo) types.MessageInfo {
-	return types.MessageInfo{
-		MessageSource: types.MessageSource{
-			Chat:     cToJid(cinfo.chat),
-			Sender:   cToJid(cinfo.sender),
-			IsFromMe: bool(cinfo.isFromMe),
-		},
-		ID:        C.GoString(cinfo.id),
-		Timestamp: time.Unix(int64(cinfo.timestamp), 0),
+func ContentToWaE2EMessage(messageType C.uint8_t, messageContent unsafe.Pointer, contextInfo *waE2E.ContextInfo) *waE2E.Message {
+	switch messageType {
+	case C.uint8_t(MessageTypeText):
+		textMsg := (*C.TextMessage)(messageContent)
+		text := C.GoString(textMsg.text)
+		return &waE2E.Message{
+			ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+				Text:        &text,
+				ContextInfo: contextInfo,
+			},
+		}
+
+	case C.uint8_t(MessageTypeFile):
+		fileMsg := (*C.FileMessage)(messageContent)
+		kind := uint8(fileMsg.kind)
+
+		filePath := C.GoString(fileMsg.path)
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			panic(fmt.Sprintf("read file %s err %#v", filePath, err))
+		}
+		mimetype := mime.TypeByExtension(filepath.Ext(filePath))
+
+		switch kind {
+		case FileTypeImage:
+			uploaded, upErr := client.Upload(context.Background(), data, whatsmeow.MediaImage)
+			if upErr != nil {
+				panic(fmt.Sprintf("upload error %#v", upErr))
+			}
+			return &waE2E.Message{
+				ImageMessage: &waE2E.ImageMessage{
+					Caption:       proto.String(C.GoString(fileMsg.caption)),
+					URL:           proto.String(uploaded.URL),
+					DirectPath:    proto.String(uploaded.DirectPath),
+					MediaKey:      uploaded.MediaKey,
+					Mimetype:      proto.String(mimetype),
+					FileEncSHA256: uploaded.FileEncSHA256,
+					FileSHA256:    uploaded.FileSHA256,
+					FileLength:    proto.Uint64(uint64(len(data))),
+					ContextInfo:   contextInfo,
+				},
+			}
+		case FileTypeDocument:
+			uploaded, upErr := client.Upload(context.Background(), data, whatsmeow.MediaDocument)
+			if upErr != nil {
+				panic(fmt.Sprintf("upload error %#v", upErr))
+			}
+			fileName := filepath.Base(filePath)
+			return &waE2E.Message{
+				DocumentMessage: &waE2E.DocumentMessage{
+					Caption:       proto.String(C.GoString(fileMsg.caption)),
+					URL:           proto.String(uploaded.URL),
+					DirectPath:    proto.String(uploaded.DirectPath),
+					MediaKey:      uploaded.MediaKey,
+					Mimetype:      proto.String(mimetype),
+					FileEncSHA256: uploaded.FileEncSHA256,
+					FileSHA256:    uploaded.FileSHA256,
+					FileLength:    proto.Uint64(uint64(len(data))),
+					FileName:      proto.String(fileName),
+					ContextInfo:   contextInfo,
+				},
+			}
+		default:
+			panic(fmt.Sprintf("Unsupported file type: %v", kind))
+		}
+
+	default:
+		panic(fmt.Sprintf("Unsupported message type: %d", messageType))
 	}
-}
-
-// Theoretically, this should be used for quoting messages, but sending nil as the message
-// and only setting the message info works.
-func CMessageToWaE2EMessage(cmsg *C.Message) (types.MessageInfo, *waE2E.Message) {
-	info := CMessageInfoToGo(cmsg.info)
-	return info, nil
-
-	// switch cmsg.messageType {
-	// case C.int8_t(MessageTypeText):
-	// 	textMsg := (*C.TextMessage)(cmsg.message)
-	// 	text := C.GoString(textMsg.text)
-	// 	LOG_INFO("Text: %v %s", textMsg.text, text)
-	// 	msg := waE2E.Message{
-	// 		Conversation: &text,
-	// 	}
-	// 	return info, &msg
-	// case C.int8_t(MessageTypeImage):
-	// 	imgMsg := (*C.ImageMessage)(cmsg.message)
-	// 	// downloadInfo, err := FileIdToDownloadInfo(C.GoString(imgMsg.fileID))
-	// 	// if err != nil {
-	// 	// 	panic(err)
-	// 	// }
-	//
-	// 	caption := C.GoString(imgMsg.caption)
-	// 	msg := waE2E.Message{
-	// 		ImageMessage: &waE2E.ImageMessage{
-	// 			Caption: &caption,
-	// 		},
-	// 	}
-	// 	return info, &msg
-	// case C.int8_t(MessageTypeVideo):
-	// 	vidMsg := (*C.VideoMessage)(cmsg.message)
-	//
-	// 	caption := C.GoString(vidMsg.caption)
-	// 	msg := waE2E.Message{
-	// 		VideoMessage: &waE2E.VideoMessage{
-	// 			Caption: &caption,
-	// 		},
-	// 	}
-	// 	return info, &msg
-	// default:
-	// 	return info, nil
-	// }
 }
 
 func HandleMessage(info types.MessageInfo, msg *waE2E.Message, isSync bool) {
@@ -725,12 +744,12 @@ func AddEventHandlers() {
 	client.AddEventHandler(func(rawEvt any) {
 		switch evt := rawEvt.(type) {
 		case *events.MarkChatAsRead:
-			LOG_INFO("MarkChatAsRead %v", evt.JID)
+			LOG_DEBUG("MarkChatAsRead %v", evt.JID)
 
 		case *events.AppStateSyncComplete:
-			LOG_ERROR("AppStateStateSyncComplete %v", evt)
+			LOG_INFO("AppStateSyncComplete %v", evt)
 			if evt.Name == appstate.WAPatchRegular {
-				LOG_ERROR("AppStateStateSyncComplete %v", evt)
+				LOG_INFO("AppStateSyncComplete (WAPatchRegular) %v", evt)
 
 				cevent := C.Event{
 					kind: C.uint8_t(EventTypeAppStateSyncComplete),
@@ -750,7 +769,7 @@ func AddEventHandlers() {
 			}
 
 			if receiptKind != -1 {
-				LOG_INFO("%#v was read by %s at %s", evt.MessageIDs, evt.SourceString(), evt.Timestamp)
+				LOG_DEBUG("%#v was read by %s at %s", evt.MessageIDs, evt.SourceString(), evt.Timestamp)
 				n := len(evt.MessageIDs)
 				cmessageIds := (**C.char)(C.malloc(C.size_t(n) * C.size_t(unsafe.Sizeof(uintptr(0)))))
 				messageIds := unsafe.Slice(cmessageIds, len(evt.MessageIDs))
@@ -847,30 +866,21 @@ func C_PairPhone(phone *C.char) *C.char {
 	return cCode
 }
 
-// func C_SendMessage(cjid C.JID, ctext *C.char, cquoteId *C.char, cquotedSender C.JID) {
-//
 //export C_SendMessage
-func C_SendMessage(cjid C.JID, ctext *C.char, quoted_msg *C.Message) {
+func C_SendMessage(cjid C.JID, messageType C.uint8_t, messageContent unsafe.Pointer, quoteId *C.char, quoteSender C.JID) {
 	jid := cToJid(cjid)
-	text := C.GoString(ctext)
-
-	// LOG_INFO("%v", cquoteId)
 
 	contextInfo := &waE2E.ContextInfo{}
-	if quoted_msg != nil {
-		info := CMessageInfoToGo(quoted_msg.info)
-		contextInfo.StanzaID = &info.ID
-		// contextInfo.QuotedMessage = msg
-		quotedSender := info.Sender.String()
-		contextInfo.Participant = &quotedSender
+	if quoteId != nil {
+		id := C.GoString(quoteId)
+		contextInfo.StanzaID = &id
+		sender := C.GoString(quoteSender)
+		contextInfo.Participant = &sender
 	}
 
-	var message waE2E.Message
-	message.ExtendedTextMessage = &waE2E.ExtendedTextMessage{
-		Text:        &text,
-		ContextInfo: contextInfo,
-	}
-	sendResponse, err := client.SendMessage(context.Background(), jid, &message)
+	message := ContentToWaE2EMessage(messageType, messageContent, contextInfo)
+
+	sendResponse, err := client.SendMessage(context.Background(), jid, message)
 	if err != nil {
 		panic(err)
 	} else {
@@ -883,7 +893,7 @@ func C_SendMessage(cjid C.JID, ctext *C.char, quoted_msg *C.Message) {
 		messageInfo.Timestamp = sendResponse.Timestamp
 
 		LOG_INFO("Message sent: %s %s", messageInfo.ID, messageInfo.Chat)
-		HandleMessage(messageInfo, &message, false)
+		HandleMessage(messageInfo, message, false)
 	}
 }
 
