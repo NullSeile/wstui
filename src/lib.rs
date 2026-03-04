@@ -1,5 +1,5 @@
 use core::fmt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::{collections::HashMap, sync::Arc, sync::Mutex};
 use std::{fs, thread};
@@ -223,8 +223,6 @@ impl Default for App<'_> {
         let project_dirs = ProjectDirs::from("com", "nullptr", "wstui").unwrap();
         let data_dir = project_dirs.data_dir();
         fs::create_dir_all(data_dir).unwrap();
-
-        eprintln!("Data directory: {}", data_dir.display());
 
         let (tx, rx) = mpsc::channel::<AppInput>();
 
