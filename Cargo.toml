@@ -19,5 +19,7 @@ ratatui-textarea = "0.8.0"
 tui-logger = "0.18.1"
 qr2term = "0.3.3"
 rfd = "0.17.2"
+open = "5.3.3"
+tempfile = "3.26.0"
 # simple_logger = { version = "5.2.0", default-features = false, features = ["stderr"] }
 

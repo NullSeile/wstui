@@ -283,10 +283,10 @@ fn render_message(
 }
 
 pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<()> {
-    let chat_jid = app.selected_chat_jid.as_ref()?;
+    let chat_jid = app.get_selected_chat()?;
 
     let block = Block::bordered()
-        .title(format!("Chat with {}", app.contact_name(chat_jid)))
+        .title(format!("Chat with {}", app.contact_name(&chat_jid)))
         .title_bottom(format!("{:?}", app.key_buffer))
         .border_style(Style::default().fg(
             if let SelectedWidget::MessageList = app.selected_widget {
@@ -304,7 +304,7 @@ pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<(
 
     let items: Vec<_> = app
         .chat_messages
-        .get(chat_jid)?
+        .get(&chat_jid)?
         .iter()
         .rev()
         .filter_map(|msg_id| app.messages.get(msg_id).cloned())

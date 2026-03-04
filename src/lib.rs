@@ -5,14 +5,11 @@ use std::thread;
 use std::{collections::HashMap, sync::Arc, sync::Mutex};
 
 pub mod db;
-pub mod message_list;
 pub mod ui;
 pub mod vim;
 
 use db::DatabaseHandler;
 use log::{debug, error, info, trace};
-use message_list::MessageListState;
-use message_list::{IMAGE_HEIGHT, IMAGE_WIDTH};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, ListState};
@@ -21,8 +18,12 @@ use ratatui_image::protocol::StatefulProtocol;
 use ratatui_image::{Resize, ResizeEncodeRender};
 use ratatui_textarea::TextArea;
 use rfd::FileDialog;
+use ui::message_list::MessageListState;
+use ui::message_list::{IMAGE_HEIGHT, IMAGE_WIDTH};
 use vim::Vim;
 use whatsrust as wr;
+
+use crate::ui::text_input::TextInput;
 
 pub fn get_contact_name(contact: &wr::Contact) -> Option<Arc<str>> {
     if !contact.full_name.is_empty() {
@@ -166,8 +167,7 @@ pub struct App<'a> {
 
     pub chat_messages: HashMap<wr::JID, Vec<wr::MessageId>>,
 
-    pub sorted_chats: Vec<Chat>,
-    pub selected_chat_jid: Option<wr::JID>,
+    pub sorted_chats: Vec<wr::JID>,
     pub chat_list_state: ListState,
 
     pub history_sync_percent: Option<u8>,
@@ -191,6 +191,10 @@ pub struct App<'a> {
     pub input_widget: TextArea<'a>,
     pub input_border: Block<'a>,
 
+    pub contact_search_active: bool,
+    pub contact_search: TextInput,
+    pub filtered_chats: Vec<wr::JID>,
+
     pub should_quit: bool,
 
     pub tx: mpsc::Sender<AppInput>,
@@ -205,7 +209,13 @@ impl Default for App<'_> {
         // input_widget.set_block(vim::Mode::Normal.block());
         input_widget.set_placeholder_text("Type a message...");
 
-        let picker = Picker::from_query_stdio().unwrap();
+        let picker = Picker::from_query_stdio().unwrap_or_else(|err| {
+            // Fallback for non-interactive environments (e.g. CI, piped stdio).
+            log::warn!(
+                "Failed to query terminal image capabilities; falling back to halfblocks: {err}"
+            );
+            Picker::halfblocks()
+        });
         let default_protocol_type = picker.protocol_type();
 
         let (tx, rx) = mpsc::channel::<AppInput>();
@@ -219,7 +229,6 @@ impl Default for App<'_> {
             chat_messages: HashMap::new(),
 
             sorted_chats: Vec::new(),
-            selected_chat_jid: None,
             chat_list_state: ListState::default(),
 
             message_list_state: MessageListState::default(),
@@ -234,6 +243,10 @@ impl Default for App<'_> {
 
             key_buffer: Vec::new(),
             key_sequence_active: false,
+
+            contact_search_active: false,
+            contact_search: TextInput::new(),
+            filtered_chats: Vec::new(),
 
             show_logs: false,
             vim: Vim::new(vim::Mode::Insert),
@@ -315,7 +328,14 @@ impl App<'_> {
         });
         // });
 
-        let mut terminal = ratatui::init();
+        let mut terminal = match ratatui::try_init() {
+            Ok(terminal) => terminal,
+            Err(e) => {
+                error!("Failed to initialize terminal UI: {e}");
+                eprintln!("Failed to initialize terminal UI: {e}");
+                return;
+            }
+        };
 
         {
             let tx = self.tx.clone();
@@ -462,20 +482,11 @@ impl App<'_> {
                     self.db_handler.add_message(&msg);
                     self.add_message(msg);
 
+                    let chat_jid = self.get_selected_chat();
+
                     self.sort_chats();
-                    let len = self.sorted_chats.len();
-                    if let Some(ref current_jid) = self.selected_chat_jid {
-                        let position = self
-                            .sorted_chats
-                            .iter()
-                            .position(|chat| &chat.jid == current_jid);
-                        self.chat_list_state.select(position);
-                    } else if len > 0 {
-                        let current = self.chat_list_state.selected();
-                        if current.map_or(true, |i| i >= len) {
-                            self.chat_list_state.select(Some(0));
-                        }
-                    }
+
+                    self.select_chat(chat_jid);
                     false // We will redraw manually
                 }
                 Ok(AppInput::Terminal(event)) => {
@@ -567,8 +578,6 @@ impl App<'_> {
                 } else {
                     self.key_buffer.push(key);
                 }
-
-                // warn!("Key event: {:?}, buffer: {:?}", key_event, self.key_buffer);
 
                 if self.key_matches(&[Key::ctrl('q')]) {
                     self.db_handler.stop();
@@ -675,7 +684,7 @@ impl App<'_> {
             && key.kind == KeyEventKind::Press
         {
             if self.key_matches(&[Key::ctrl('x')]) {
-                if let Some(c) = self.selected_chat_jid.clone() {
+                if let Some(c) = self.get_selected_chat() {
                     let text = self.input_widget.lines().join("\n");
                     let msg = if let Some((path, typ)) = &self.attached_file {
                         wr::MessageContent::File(wr::FileContent {
@@ -739,44 +748,111 @@ impl App<'_> {
     fn chat_list_on_event(&mut self, event: &Event) {
         if let Event::Key(key) = event {
             if key.kind == KeyEventKind::Press {
-                let mut moved = false;
-                if self.key_matches(&[Key::c('j')]) {
-                    self.chat_list_state.select_next();
-                    moved = true;
-                } else if self.key_matches(&[Key::c('k')]) {
-                    self.chat_list_state.select_previous();
-                    moved = true;
+                if self.key_matches(&[Key::k(KeyCode::Esc)]) {
+                    let chat_jid = self.get_selected_chat();
+
+                    self.contact_search_active = false;
+                    self.contact_search.clean();
+
+                    self.select_chat(chat_jid);
+
+                    return;
                 }
-                if moved {
-                    // Bound the selected index to the number of chats
-                    let len = self.sorted_chats.len();
-                    if len == 0 {
-                        self.chat_list_state.select(None);
-                        return;
-                    } else if let Some(selected) = self.chat_list_state.selected() {
-                        if selected >= len {
-                            self.chat_list_state.select(Some(len.saturating_sub(1)));
+
+                if !self.contact_search_active {
+                    let mut moved = false;
+                    if self.key_matches(&[Key::c('j')]) {
+                        self.chat_list_state.select_next();
+                        moved = true;
+                    } else if self.key_matches(&[Key::c('k')]) {
+                        self.chat_list_state.select_previous();
+                        moved = true;
+                    }
+                    if moved {
+                        // Bound the selected index to the number of chats
+                        let len = self.sorted_chats.len();
+                        if len == 0 {
+                            self.chat_list_state.select(None);
+                            return;
+                        } else if let Some(selected) = self.chat_list_state.selected() {
+                            if selected >= len {
+                                self.chat_list_state.select(Some(len.saturating_sub(1)));
+                            }
                         }
+
+                        self.sort_chat_messages(self.get_selected_chat().unwrap());
+                        self.message_list_state.reset();
                     }
 
-                    self.selected_chat_jid = self
-                        .chat_list_state
-                        .selected()
-                        .map(|index| self.sorted_chats[index].jid.clone());
-
-                    self.sort_chat_messages(self.selected_chat_jid.as_ref().unwrap().clone());
-                    self.message_list_state.reset();
-                }
-
-                if self.key_matches(&[Key::k(KeyCode::Enter)]) {
-                    if let Some(index) = self.chat_list_state.selected() {
-                        let chat_jid = self.sorted_chats[index].jid.clone();
-                        self.selected_chat_jid = Some(chat_jid);
-                        self.message_list_state.reset();
-                        self.selected_widget = SelectedWidget::Input;
+                    if self.key_matches(&[Key::k(KeyCode::Enter)]) {
+                        if self.chat_list_state.selected().is_some() {
+                            self.message_list_state.reset();
+                            self.selected_widget = SelectedWidget::Input;
+                        }
+                    } else if self.key_matches(&[Key::c('/')]) {
+                        self.contact_search_active = true;
+                    }
+                } else {
+                    match key.code {
+                        // KeyCode::Enter => self.contact_search_active.submit_message(),
+                        KeyCode::Char(to_insert) => {
+                            self.contact_search.enter_char(to_insert);
+                            self.update_filtered_chats();
+                        }
+                        KeyCode::Backspace => self.contact_search.delete_char(),
+                        KeyCode::Left => self.contact_search.move_cursor_left(),
+                        KeyCode::Right => self.contact_search.move_cursor_right(),
+                        KeyCode::Enter => {
+                            self.contact_search_active = false;
+                        }
+                        _ => {}
                     }
                 }
             }
+        }
+    }
+
+    pub fn get_selected_chat(&self) -> Option<wr::JID> {
+        self.chat_list_state.selected().map(|index| {
+            if self.contact_search.input.is_empty() {
+                self.sorted_chats[index].clone()
+            } else {
+                self.filtered_chats[index].clone()
+            }
+        })
+    }
+
+    pub fn select_chat(&mut self, jid: Option<wr::JID>) {
+        if let Some(jid) = jid
+            && let Some(index) = self
+                .sorted_chats
+                .iter()
+                .position(|chat_jid| chat_jid == &jid)
+        {
+            self.chat_list_state.select(Some(index));
+        } else if self.sorted_chats.len() > 0 {
+            self.chat_list_state.select(Some(0));
+        } else {
+            self.chat_list_state.select(None);
+        }
+    }
+
+    fn update_filtered_chats(&mut self) {
+        let query = self.contact_search.input.to_lowercase();
+        self.filtered_chats = self
+            .sorted_chats
+            .iter()
+            .filter(|chat| {
+                let name = self.contact_name(&chat).to_lowercase();
+                name.contains(&query)
+            })
+            .map(|chat| chat.clone())
+            .collect();
+
+        if self.filtered_chats.len() > 0 {
+            self.chat_list_state.select(Some(0));
+        } else {
+            self.chat_list_state.select(None);
         }
     }
 
@@ -822,6 +898,28 @@ impl App<'_> {
                 }
             } else if self.key_matches(&[Key::k(KeyCode::Esc)]) {
                 self.message_list_state.reset();
+            } else if self.key_matches(&[Key::c('o')]) {
+                if let Some(msg_id) = self.message_list_state.get_selected_message()
+                    && let Some(msg) = self.messages.get(&msg_id)
+                {
+                    match &msg.message {
+                        wr::MessageContent::Text(_text) => {
+                            // let mut file = tempfile::tempfile().unwrap();
+                            //
+                            // file.write_all(text.as_bytes()).unwrap();
+                            //
+                            // open::that(file.).unwrap();
+                        }
+                        wr::MessageContent::File(content) => {
+                            match open::that(self.media_path.join(content.path.as_ref())) {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    error!("Failed to open file {}: {:?}", content.path, e);
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -882,7 +980,8 @@ impl App<'_> {
             let b_time = b.last_message_time.unwrap_or_default();
             b_time.cmp(&a_time)
         });
-        self.sorted_chats = entries;
+
+        self.sorted_chats = entries.iter().map(|chat| chat.jid.clone()).collect();
     }
 
     fn sort_chat_messages(&mut self, chat_jid: wr::JID) {

@@ -1,11 +1,12 @@
-use crate::{
-    App, SelectedWidget,
-    message_list::{get_quoted_text, render_messages},
-};
+pub mod message_list;
+pub mod text_input;
+
+use crate::{App, SelectedWidget};
 use log::trace;
+use message_list::{get_quoted_text, render_messages};
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Layout, Position, Rect},
     style::{Style, Stylize},
     widgets::{Block, Borders, List, Paragraph},
 };
@@ -99,11 +100,35 @@ fn render_logs(frame: &mut Frame, area: Rect) {
 }
 
 fn render_contacts(frame: &mut Frame, app: &mut App, area: Rect) {
-    let items = app
-        .sorted_chats
+    let chats = if app.contact_search.input.is_empty() {
+        &app.sorted_chats
+    } else {
+        &app.filtered_chats
+    };
+    let items = chats
         .iter()
-        .map(|chat| app.contact_name(&chat.jid).to_string())
+        .map(|chat| app.contact_name(&chat).to_string())
         .collect::<Vec<_>>();
+
+    let mut list_area = area;
+    if !app.contact_search.input.is_empty() || app.contact_search_active {
+        let [search_area, new_list_area] =
+            Layout::vertical([Constraint::Length(1), Constraint::Percentage(100)]).areas(area);
+        list_area = new_list_area;
+
+        let text = format!("/{}", app.contact_search.input);
+        frame.render_widget(Paragraph::new(text), search_area);
+
+        if app.contact_search_active {
+            frame.set_cursor_position(Position::new(
+                // Draw the cursor at the current position in the input field.
+                // This position is can be controlled via the left and right arrow key
+                search_area.x + app.contact_search.character_index as u16 + 1,
+                // Move one line down, from the border to the input line
+                search_area.y,
+            ));
+        }
+    }
 
     let list = List::new(items)
         .block(
@@ -123,7 +148,7 @@ fn render_contacts(frame: &mut Frame, app: &mut App, area: Rect) {
         )
         .highlight_style(ratatui::style::Style::default().fg(ratatui::style::Color::Green));
 
-    frame.render_stateful_widget(list, area, &mut app.chat_list_state);
+    frame.render_stateful_widget(list, list_area, &mut app.chat_list_state);
 }
 
 pub fn render_chats(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -132,7 +157,7 @@ pub fn render_chats(frame: &mut Frame, app: &mut App, area: Rect) {
 
     render_messages(frame, app, chat_area);
 
-    if let Some(_chat_jid) = app.selected_chat_jid.clone() {
+    if let Some(_chat_jid) = app.get_selected_chat() {
         let input_block = app.input_border.clone().border_style(Style::default().fg(
             if let SelectedWidget::Input = app.selected_widget {
                 ratatui::style::Color::Green

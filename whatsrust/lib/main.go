@@ -269,17 +269,17 @@ func contactDisplayName(c types.ContactInfo) string {
 }
 
 //export C_SetLogHandler
-func C_SetLogHandler(handler C.LogHandler, data unsafe.Pointer) {
+func C_SetLogHandler(callback C.LogHandlerCallback, data unsafe.Pointer) {
 	logHandler = C.LogHandler{
-		callback:  handler.callback,
+		callback:  callback,
 		user_data: data,
 	}
 }
 
 //export C_SetEventHandler
-func C_SetEventHandler(handler C.EventHandler, data unsafe.Pointer) {
+func C_SetEventHandler(callback C.EventCallback, data unsafe.Pointer) {
 	eventHandler = C.EventHandler{
-		callback:  handler.callback,
+		callback:  callback,
 		user_data: data,
 	}
 }
