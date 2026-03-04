@@ -1,14 +1,15 @@
 use core::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::thread;
 use std::{collections::HashMap, sync::Arc, sync::Mutex};
+use std::{fs, thread};
 
 pub mod db;
 pub mod ui;
 pub mod vim;
 
 use db::DatabaseHandler;
+use directories::ProjectDirs;
 use log::{debug, error, info, trace};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::Rect;
@@ -157,7 +158,8 @@ impl Key {
 
 pub struct App<'a> {
     pub db_handler: DatabaseHandler,
-    pub media_path: &'a Path,
+    pub media_path: PathBuf,
+    pub whatsmeow_db: PathBuf,
 
     pub messages: HashMap<wr::MessageId, wr::Message>,
     pub chats: HashMap<wr::JID, Chat>,
@@ -218,11 +220,18 @@ impl Default for App<'_> {
         });
         let default_protocol_type = picker.protocol_type();
 
+        let project_dirs = ProjectDirs::from("com", "nullptr", "wstui").unwrap();
+        let data_dir = project_dirs.data_dir();
+        fs::create_dir_all(data_dir).unwrap();
+
+        eprintln!("Data directory: {}", data_dir.display());
+
         let (tx, rx) = mpsc::channel::<AppInput>();
 
         Self {
-            db_handler: DatabaseHandler::new("whatsapp.db"),
-            media_path: Path::new("media"),
+            db_handler: DatabaseHandler::new(&data_dir.join("whatsapp.db")),
+            media_path: data_dir.join("media"),
+            whatsmeow_db: data_dir.join("whatsmeow.db"),
             messages: HashMap::new(),
             chats: HashMap::new(),
             contacts: HashMap::new(),
@@ -263,8 +272,6 @@ impl App<'_> {
     pub fn run(&mut self, phone: Option<String>) {
         self.db_init();
 
-        let ws_database_path = "whatsmeow_store.db";
-
         {
             let tx = self.tx.clone();
             wr::set_log_handler(move |msg, level| {
@@ -296,7 +303,7 @@ impl App<'_> {
         }
 
         info!("Starting WhatsRust Client...");
-        wr::new_client(ws_database_path);
+        wr::new_client(self.whatsmeow_db.to_str().unwrap());
         info!("WhatsRust Client started");
 
         // Single dedicated thread for all CGo downloads. Calling Go from many Rust-spawned

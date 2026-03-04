@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 use log::debug;
 use rusqlite::Connection;
@@ -16,7 +19,7 @@ pub struct DatabaseHandler {
 }
 
 impl DatabaseHandler {
-    pub fn new(db_path: &str) -> Self {
+    pub fn new(db_path: &Path) -> Self {
         let db = Connection::open(db_path).unwrap();
 
         let new_messages_queue = Arc::new(Mutex::new(Vec::<wr::Message>::new()));
@@ -26,7 +29,7 @@ impl DatabaseHandler {
         let new_messages_queue_clone = Arc::clone(&new_messages_queue);
         let new_chats_queue_clone = Arc::clone(&new_chats_queue);
         let should_stop_clone = Arc::clone(&should_stop);
-        let db_path = db_path.to_string();
+        let db_path = db_path.to_owned();
         let thread = std::thread::spawn(move || {
             let mut db = Connection::open(db_path).unwrap();
             loop {
