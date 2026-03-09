@@ -831,11 +831,14 @@ impl App<'_> {
     }
 
     pub fn select_chat(&mut self, jid: Option<wr::JID>) {
+        let target_list = if self.contact_search.input.is_empty() {
+            &self.sorted_chats
+        } else {
+            &self.filtered_chats
+        };
+
         if let Some(jid) = jid
-            && let Some(index) = self
-                .sorted_chats
-                .iter()
-                .position(|chat_jid| chat_jid == &jid)
+            && let Some(index) = target_list.iter().position(|chat_jid| chat_jid == &jid)
         {
             self.chat_list_state.select(Some(index));
         } else if self.sorted_chats.len() > 0 {
