@@ -804,7 +804,10 @@ impl App<'_> {
                             self.contact_search.enter_char(to_insert);
                             self.update_filtered_chats();
                         }
-                        KeyCode::Backspace => self.contact_search.delete_char(),
+                        KeyCode::Backspace => {
+                            self.contact_search.delete_char();
+                            self.update_filtered_chats();
+                        }
                         KeyCode::Left => self.contact_search.move_cursor_left(),
                         KeyCode::Right => self.contact_search.move_cursor_right(),
                         KeyCode::Enter => {
