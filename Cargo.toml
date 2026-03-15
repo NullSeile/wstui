@@ -22,5 +22,7 @@ rfd = "0.17.2"
 open = "5.3.3"
 tempfile = "3.26.0"
 directories = "6.0.0"
+arboard = { version = "3.6.1", features = ["wayland-data-control"] }
+edit = "0.1.5"
 # simple_logger = { version = "5.2.0", default-features = false, features = ["stderr"] }
 

@@ -1,7 +1,9 @@
 use core::fmt;
+use std::io::stdout;
 use std::path::PathBuf;
 use std::sync::mpsc;
-use std::{collections::HashMap, sync::Arc, sync::Mutex};
+use std::time::Duration;
+use std::{collections::HashMap, sync::Arc, sync::Condvar, sync::Mutex};
 use std::{fs, thread};
 
 pub mod db;
@@ -9,9 +11,12 @@ pub mod ui;
 pub mod vim;
 
 use db::DatabaseHandler;
+use arboard::Clipboard;
 use directories::ProjectDirs;
 use log::{debug, error, info, trace};
+use ratatui::crossterm::ExecutableCommand;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode};
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, ListState};
 use ratatui_image::picker::{Picker, ProtocolType};
@@ -66,6 +71,7 @@ pub enum AppEvent {
     LoadFilePreview(wr::MessageId),
     SetFilePreview(wr::MessageId, Arc<str>, StatefulProtocol),
     SetFileState(wr::MessageId, FileMeta),
+    EditWithExternalEditor,
 }
 
 impl fmt::Debug for AppEvent {
@@ -94,6 +100,7 @@ impl fmt::Debug for AppEvent {
                 .field(message_id)
                 .field(state)
                 .finish(),
+            AppEvent::EditWithExternalEditor => f.debug_tuple("EditWithExternalEditor").finish(),
         }
     }
 }
@@ -112,6 +119,14 @@ pub enum SelectedWidget {
     Input,
     MessageList,
     MessageView,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InputReaderState {
+    Running,
+    Pausing,
+    Paused,
+    Stopped,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,6 +182,8 @@ pub struct App<'a> {
     // Maps JID to display name
     pub contacts: HashMap<wr::JID, Arc<str>>,
 
+    pub clipboard: Clipboard,
+
     pub chat_messages: HashMap<wr::JID, Vec<wr::MessageId>>,
 
     pub sorted_chats: Vec<wr::JID>,
@@ -201,6 +218,7 @@ pub struct App<'a> {
 
     pub tx: mpsc::Sender<AppInput>,
     pub rx: mpsc::Receiver<AppInput>,
+    input_reader_control: Arc<(Mutex<InputReaderState>, Condvar)>,
 }
 
 impl Default for App<'_> {
@@ -225,11 +243,15 @@ impl Default for App<'_> {
         fs::create_dir_all(data_dir).unwrap();
 
         let (tx, rx) = mpsc::channel::<AppInput>();
+        let input_reader_control = Arc::new((Mutex::new(InputReaderState::Running), Condvar::new()));
 
         Self {
             db_handler: DatabaseHandler::new(&data_dir.join("whatsapp.db")),
             media_path: data_dir.join("media"),
             whatsmeow_db: data_dir.join("whatsmeow.db"),
+
+            clipboard: Clipboard::new().unwrap(),
+
             messages: HashMap::new(),
             chats: HashMap::new(),
             contacts: HashMap::new(),
@@ -262,6 +284,7 @@ impl Default for App<'_> {
             should_quit: false,
             tx,
             rx,
+            input_reader_control,
         }
     }
 }
@@ -344,12 +367,44 @@ impl App<'_> {
 
         {
             let tx = self.tx.clone();
+            let input_reader_control = Arc::clone(&self.input_reader_control);
             thread::spawn(move || {
                 loop {
-                    if let Ok(event) = event::read() {
-                        if let Err(e) = tx.send(AppInput::Terminal(event)) {
-                            error!("Failed to send terminal event: {:?}", e);
-                            break;
+                    {
+                        let (state_lock, state_changed) = &*input_reader_control;
+                        let mut state = state_lock.lock().unwrap();
+                        loop {
+                            match *state {
+                                InputReaderState::Running => break,
+                                InputReaderState::Pausing => {
+                                    *state = InputReaderState::Paused;
+                                    state_changed.notify_all();
+                                }
+                                InputReaderState::Paused => {
+                                    state = state_changed.wait(state).unwrap();
+                                }
+                                InputReaderState::Stopped => return,
+                            }
+                        }
+                    }
+
+                    match event::poll(Duration::from_millis(50)) {
+                        Ok(true) => match event::read() {
+                            Ok(event) => {
+                                if let Err(e) = tx.send(AppInput::Terminal(event)) {
+                                    error!("Failed to send terminal event: {:?}", e);
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                error!("Failed to read terminal event: {e}");
+                                thread::sleep(Duration::from_millis(50));
+                            }
+                        },
+                        Ok(false) => {}
+                        Err(e) => {
+                            error!("Failed to poll terminal events: {e}");
+                            thread::sleep(Duration::from_millis(50));
                         }
                     }
                 }
@@ -363,6 +418,25 @@ impl App<'_> {
             // info!("Received message: {:?}", &msg);
             let should_draw = match msg {
                 Ok(AppInput::App(event)) => match event {
+                    AppEvent::EditWithExternalEditor => {
+                        self.suspend_input_reader();
+                        stdout().execute(LeaveAlternateScreen).unwrap();
+                        disable_raw_mode().unwrap();
+                        let edit_result = edit::edit(self.input_widget.lines().join("\n"));
+                        stdout().execute(EnterAlternateScreen).unwrap();
+                        enable_raw_mode().unwrap();
+                        terminal.clear().unwrap();
+                        self.resume_input_reader();
+
+                        if let Ok(text) = edit_result {
+                            self.input_widget.select_all();
+                            self.input_widget.delete_next_char();
+                            self.input_widget.insert_str(&text);
+                        } else {
+                            error!("Failed to launch external editor");
+                        }
+                        true
+                    }
                     AppEvent::SetFilePreview(message_id, file_path, img) => {
                         self.image_cache.insert(file_path.clone(), img);
                         self.metadata
@@ -514,6 +588,7 @@ impl App<'_> {
             }
         }
 
+        self.stop_input_reader();
         ratatui::restore();
         wr::disconnect();
     }
@@ -565,6 +640,41 @@ impl App<'_> {
             .get(jid)
             .cloned()
             .unwrap_or_else(|| jid.0.clone())
+    }
+
+    fn suspend_input_reader(&self) {
+        let (state_lock, state_changed) = &*self.input_reader_control;
+        let mut state = state_lock.lock().unwrap();
+
+        match *state {
+            InputReaderState::Stopped | InputReaderState::Paused => return,
+            InputReaderState::Running => {
+                *state = InputReaderState::Pausing;
+                state_changed.notify_all();
+            }
+            InputReaderState::Pausing => {}
+        }
+
+        while *state != InputReaderState::Paused && *state != InputReaderState::Stopped {
+            state = state_changed.wait(state).unwrap();
+        }
+    }
+
+    fn resume_input_reader(&self) {
+        let (state_lock, state_changed) = &*self.input_reader_control;
+        let mut state = state_lock.lock().unwrap();
+
+        if *state != InputReaderState::Stopped {
+            *state = InputReaderState::Running;
+            state_changed.notify_all();
+        }
+    }
+
+    fn stop_input_reader(&self) {
+        let (state_lock, state_changed) = &*self.input_reader_control;
+        let mut state = state_lock.lock().unwrap();
+        *state = InputReaderState::Stopped;
+        state_changed.notify_all();
     }
 
     fn on_event(&mut self, event: Event) {
@@ -710,6 +820,8 @@ impl App<'_> {
                     self.attached_file = None;
                 }
                 return;
+            } else if self.key_matches(&[Key::ctrl('e')]) {
+                self.tx.send(AppInput::App(AppEvent::EditWithExternalEditor)).unwrap();
             }
             if self.vim.mode == vim::Mode::Normal {
                 if self.key_matches(&[Key::c(' '), Key::c('r')]) {
@@ -729,6 +841,12 @@ impl App<'_> {
                     if let Some(path) = FileDialog::new().pick_file() {
                         self.attached_file =
                             Some((path.to_str().unwrap().into(), wr::FileKind::Document));
+                    }
+                } else if self.key_matches(&[Key::c(' '), Key::c('p')]) {
+                    if let Ok(text) = self.clipboard.get_text() {
+                        self.input_widget.insert_str(&text);
+                    } else {
+                        error!("Failed to get text from clipboard");
                     }
                 }
             }
@@ -873,22 +991,9 @@ impl App<'_> {
         {
             if self.key_matches(&[Key::ctrl('e')]) {
                 self.message_list_state.offset = self.message_list_state.offset.saturating_sub(1);
-            }
-            if self.key_matches(&[Key::ctrl('y')]) {
+            } else if self.key_matches(&[Key::ctrl('y')]) {
                 self.message_list_state.offset = self.message_list_state.offset.saturating_add(1);
-            }
-            if self.key_matches(&[Key::c('g'), Key::c('q')]) {
-                if let Some(msg_id) = &self.message_list_state.get_selected_message()
-                    && let Some(msg) = self.messages.get(msg_id)
-                    && let Some(ref quote_id) = msg.info.quote_id
-                {
-                    self.message_list_state
-                        .set_selected_message(quote_id.clone());
-                }
-                return;
-            }
-
-            if self.key_matches(&[Key::c('k')]) {
+            } else if self.key_matches(&[Key::c('k')]) {
                 self.message_list_state.select_next();
             } else if self.key_matches(&[Key::c('j')]) {
                 self.message_list_state.select_previous();
@@ -896,23 +1001,13 @@ impl App<'_> {
                 self.message_list_state.select_first();
             } else if self.key_matches(&[Key::c('g'), Key::c('g')]) {
                 self.message_list_state.select_last();
-            } else if self.key_matches(&[Key::c('r')]) {
-                if let Some(msg_id) = &self.message_list_state.get_selected_message() {
-                    if let Some(msg) = self.messages.get(msg_id) {
-                        self.quoting_message = Some(msg.clone());
-                        self.selected_widget = SelectedWidget::Input;
-                    }
-                }
-            } else if self.key_matches(&[Key::k(KeyCode::Enter)]) {
-                if self.message_list_state.get_selected_message().is_some() {
-                    self.selected_widget = SelectedWidget::MessageView;
-                }
             } else if self.key_matches(&[Key::k(KeyCode::Esc)]) {
                 self.message_list_state.reset();
-            } else if self.key_matches(&[Key::c('o')]) {
-                if let Some(msg_id) = self.message_list_state.get_selected_message()
-                    && let Some(msg) = self.messages.get(&msg_id)
-                {
+            }
+
+            if let Some(msg_id) = self.message_list_state.get_selected_message()
+                && let Some(msg) = self.messages.get(&msg_id).cloned() {
+                if self.key_matches(&[Key::c('o')]) {
                     match &msg.message {
                         wr::MessageContent::Text(_text) => {
                             // let mut file = tempfile::tempfile().unwrap();
@@ -930,8 +1025,38 @@ impl App<'_> {
                             }
                         }
                     }
+                } else if self.key_matches(&[Key::c('r')]) {
+                    self.quoting_message = Some(msg.clone());
+                    self.selected_widget = SelectedWidget::Input;
+                } else if self.key_matches(&[Key::k(KeyCode::Enter)]) {
+                    self.selected_widget = SelectedWidget::MessageView;
+                } else if self.key_matches(&[Key::c('y')]) {
+                    match &msg.message {
+                        wr::MessageContent::Text(text) => {
+                            if let Err(e) = self.clipboard.set_text(text.to_string()) {
+                                error!("Failed to copy text to clipboard: {:?}", e);
+                            }
+                        },
+                        wr::MessageContent::File(content) => {
+                            let path = self.media_path.join(content.path.as_ref());
+                            if let Err(e) = self
+                                .clipboard
+                                .set_text(path.to_string_lossy().into_owned())
+                            {
+                                error!("Failed to copy file to clipboard: {:?}", e);
+                            }
+                        },
+                    }
+                }
+
+                if let Some(ref quote_id) = msg.info.quote_id {
+                    if self.key_matches(&[Key::c('g'), Key::c('q')]) {
+                        self.message_list_state
+                            .set_selected_message(quote_id.clone());
+                    }
                 }
             }
+
         }
     }
 
