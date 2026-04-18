@@ -14,6 +14,7 @@ use db::DatabaseHandler;
 use arboard::Clipboard;
 use directories::ProjectDirs;
 use log::{debug, error, info, trace};
+use notify_rust::Notification;
 use ratatui::crossterm::ExecutableCommand;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode};
@@ -109,7 +110,10 @@ impl fmt::Debug for AppEvent {
 pub enum AppInput {
     Draw,
     App(AppEvent),
-    Message(wr::Message),
+    Message {
+        message: wr::Message,
+        is_sync: bool,
+    },
     WhatsApp(wr::Event),
     Terminal(Event),
 }
@@ -316,10 +320,8 @@ impl App<'_> {
         {
             let tx = self.tx.clone();
             wr::set_message_handler(move |message, is_sync| {
-                tx.send(AppInput::Message(message)).unwrap();
-                if !is_sync {
-                    tx.send(AppInput::Draw).unwrap();
-                }
+                tx.send(AppInput::Message { message, is_sync }).unwrap();
+                tx.send(AppInput::Draw).unwrap();
             });
         }
 
@@ -557,7 +559,11 @@ impl App<'_> {
                         true
                     }
                 },
-                Ok(AppInput::Message(msg)) => {
+                Ok(AppInput::Message { message: msg, is_sync }) => {
+                    if !is_sync {
+                        self.handle_notification(&msg);
+                    }
+
                     self.db_handler.add_message(&msg);
                     self.add_message(msg);
 
@@ -640,6 +646,34 @@ impl App<'_> {
             .get(jid)
             .cloned()
             .unwrap_or_else(|| jid.0.clone())
+    }
+
+    fn handle_notification(&self, message: &wr::Message) {
+        if message.info.is_from_me {
+            return;
+        }
+
+        let summary = self.contact_name(&message.info.sender);
+        let body = match &message.message {
+            wr::MessageContent::Text(text) => text.to_string(),
+            wr::MessageContent::File(file) => {
+                if let Some(caption) = &file.caption {
+                    caption.to_string()
+                } else {
+                    match file.kind {
+                        wr::FileKind::Image => "Sent an image".to_string(),
+                        wr::FileKind::Video => "Sent a video".to_string(),
+                        wr::FileKind::Audio => "Sent an audio message".to_string(),
+                        wr::FileKind::Document => "Sent a document".to_string(),
+                        wr::FileKind::Sticker => "Sent a sticker".to_string(),
+                    }
+                }
+            }
+        };
+
+        if let Err(err) = Notification::new().summary(&summary).body(&body).show() {
+            error!("Failed to show desktop notification: {err}");
+        }
     }
 
     fn suspend_input_reader(&self) {
