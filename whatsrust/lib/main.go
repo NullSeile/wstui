@@ -22,6 +22,13 @@ typedef struct {
 } ContactEntry;
 
 typedef struct {
+	bool found;
+	int64_t muted_until;
+	bool pinned;
+	bool archived;
+} ChatSettings;
+
+typedef struct {
 	ContactEntry* entries;
 	uint32_t size;
 } GetContactsResult;
@@ -945,6 +952,47 @@ func C_GetContacts() C.GetContactsResult {
 	return C.GetContactsResult{
 		entries: (*C.ContactEntry)(c_entries),
 		size:    C.uint32_t(n),
+	}
+}
+
+//export C_GetChatSettings
+func C_GetChatSettings(cjid C.JID) C.ChatSettings {
+	ctx := context.Background()
+	jid := cToJid(cjid).ToNonAD()
+
+	settings, err := client.Store.ChatSettings.GetChatSettings(ctx, jid)
+	if err != nil {
+		LOG_WARN("failed to get chat settings for %s: %v", jid, err)
+		return C.ChatSettings{}
+	}
+
+	if !settings.Found {
+		if jid.Server == types.DefaultUserServer {
+			// App state often stores settings under LID JID, try that if PN lookup missed.
+			if lidJID, mapErr := client.Store.LIDs.GetLIDForPN(ctx, jid); mapErr == nil && !lidJID.IsEmpty() {
+				if altSettings, altErr := client.Store.ChatSettings.GetChatSettings(ctx, lidJID.ToNonAD()); altErr == nil && altSettings.Found {
+					settings = altSettings
+				}
+			}
+		} else if jid.Server == types.HiddenUserServer {
+			if pnJID, mapErr := client.Store.LIDs.GetPNForLID(ctx, jid); mapErr == nil && !pnJID.IsEmpty() {
+				if altSettings, altErr := client.Store.ChatSettings.GetChatSettings(ctx, pnJID.ToNonAD()); altErr == nil && altSettings.Found {
+					settings = altSettings
+				}
+			}
+		}
+	}
+
+	mutedUntil := int64(0)
+	if !settings.MutedUntil.IsZero() {
+		mutedUntil = settings.MutedUntil.Unix()
+	}
+
+	return C.ChatSettings{
+		found:       C.bool(settings.Found),
+		muted_until: C.int64_t(mutedUntil),
+		pinned:      C.bool(settings.Pinned),
+		archived:    C.bool(settings.Archived),
 	}
 }
 

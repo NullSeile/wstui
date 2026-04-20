@@ -1,5 +1,5 @@
 use std::{
-    ffi::{CStr, CString, c_char, c_void},
+    ffi::{c_char, c_void, CStr, CString},
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -55,6 +55,14 @@ struct CContactEntry {
 struct CGetContactsResult {
     entries: *const CContactEntry,
     size: u32,
+}
+
+#[repr(C)]
+struct CChatSettings {
+    found: bool,
+    muted_until: i64,
+    pinned: bool,
+    archived: bool,
 }
 
 #[repr(C)]
@@ -184,6 +192,14 @@ pub struct Contact {
     pub business_name: Arc<str>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct ChatSettings {
+    pub found: bool,
+    pub muted_until: i64,
+    pub pinned: bool,
+    pub archived: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct GroupInfo {
     pub jid: JID,
@@ -234,6 +250,7 @@ unsafe extern "C" {
         quote_sender: CJID,
     );
     fn C_GetContacts() -> CGetContactsResult;
+    fn C_GetChatSettings(jid: CJID) -> CChatSettings;
     fn C_Disconnect();
     fn C_PairPhone(phone: *const c_char) -> *const c_char;
     fn C_DownloadFile(file_id: *const c_char, base_path: *const c_char) -> u8;
@@ -510,4 +527,16 @@ pub fn get_contacts() -> Vec<(JID, Arc<str>)> {
             (jid, name)
         })
         .collect()
+}
+
+pub fn get_chat_settings(jid: &JID) -> ChatSettings {
+    let jid_c = CJID::from(jid);
+    let settings = unsafe { C_GetChatSettings(jid_c) };
+
+    ChatSettings {
+        found: settings.found,
+        muted_until: settings.muted_until,
+        pinned: settings.pinned,
+        archived: settings.archived,
+    }
 }

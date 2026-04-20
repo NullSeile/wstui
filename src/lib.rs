@@ -2,7 +2,7 @@ use core::fmt;
 use std::io::stdout;
 use std::path::PathBuf;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{collections::HashMap, sync::Arc, sync::Condvar, sync::Mutex};
 use std::{fs, thread};
 
@@ -651,6 +651,18 @@ impl App<'_> {
     fn handle_notification(&self, message: &wr::Message) {
         if message.info.is_from_me {
             return;
+        }
+
+        let chat_settings = wr::get_chat_settings(&message.info.chat);
+        info!("Chat settings for {:?}: {:?}", message.info.chat, chat_settings);
+        if chat_settings.found {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_secs() as i64)
+                .unwrap_or_default();
+            if chat_settings.muted_until > now {
+                return;
+            }
         }
 
         let summary = self.contact_name(&message.info.sender);
