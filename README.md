@@ -42,37 +42,80 @@ On first run the client creates `whatsmeow_store.db` (session) and uses a `media
 |-------|----|
 | Quit | `Ctrl+Q` |
 | Toggle logs | `Ctrl+Shift+L` |
+| Cycle image protocol | `Ctrl+P` |
 
-| Focus / navigation | |
+|Focus / navigation| |
 |-------|----|
-| Chat list → Message list | `Ctrl+L` (when focus is on chat list) |
+| Chat list → Message list | `Ctrl+L` |
+| Message list → Chat list | `Ctrl+H` |
 | Message list → Input | `Ctrl+J` |
 | Input → Message list | `Ctrl+K` |
 | Input → Chat list | `Ctrl+H` |
-| Message list → Chat list | `Ctrl+H` |
+| Message view → Message list | `Esc` |
 
 | **Chat list** | |
 |-------|----|
 | Next / previous chat | `j` / `k` |
-| Open chat (focus input) | `Enter` |
+| Open chat | `Enter` or `l` |
+| Search contacts | `/` |
+| Move cursor left/right | `←` / `→` |
 
 | **Message list** | |
 |-------|----|
 | Next / previous message | `j` / `k` |
-| First / last message | `G` / `g g` |
-| Scroll view | `Ctrl+E` / `Ctrl+Y` |
-| Reply to selected message | `r` |
+| First message | `g g` |
+| Last message | `G` |
+| Scroll up | `Ctrl+E` |
+| Scroll down | `Ctrl+Y` |
+| Open (external) | `o` |
+| Reply to message | `r` |
+| Copy to clipboard | `y` |
+| View full content | `Enter` |
 | Go to quoted message | `g q` |
-| Open message view (full content) | `Enter` |
+| Reset selection | `Esc` |
 
-| **Message view** | |
-|-------|----|
-| Close back to list | `Esc` |
-
-| Input | |
+| **Input** | |
 |-------|----|
 | Send message | `Ctrl+X` |
-| Clear quote | `Ctrl+R` |
-| **Input (Vim)** | `i` Insert, `Esc` Normal, then h/j/k/l, w/e/b, ^/$, d/c/p/y, etc. |
+| Edit with external editor | `Ctrl+E` |
+| Clear quote | `Space r` |
+| Attach image | `Space a i` |
+| Attach document | `Space a d` |
+| Clear attachment | `Space a r` |
+| Paste from clipboard | `Space p` |
 
-Image protocol (halfblocks vs sixels) can be cycled with `Ctrl+P` if your terminal supports it.
+| **Input (Vim mode)** | |
+|-------|----|
+| Enter insert mode | `i` |
+| Enter normal mode | `Esc` |
+| Append | `a` |
+| Append at EOL | `A` |
+| New line below | `o` |
+| New line above | `O` |
+| Move left | `h` |
+| Move down | `j` |
+| Move up | `k` |
+| Move right | `l` |
+| Word forward | `w` |
+| Word end | `e` |
+| Word back | `b` |
+| Line start | `^` |
+| Line end | `$` |
+| Yank (copy) line | `yy` |
+| Delete line | `dd` |
+| Change line | `cc` |
+| Paste | `p` |
+| Undo | `u` |
+| Redo | `Ctrl+R` |
+| Delete char | `x` |
+| Visual mode | `v` |
+| Visual line | `V` |
+| Visual yank | `y` |
+| Visual delete | `d` |
+| Visual change | `c` |
+| Scroll down | `Ctrl+D` |
+| Scroll up | `Ctrl+U` |
+| Page down | `Ctrl+F` |
+| Page up | `Ctrl+B` |
+| Go to top | `g g` |
+| Go to bottom | `G` |
