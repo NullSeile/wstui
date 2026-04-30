@@ -9,29 +9,29 @@ A **WhatsApp client** for the terminal. Built in Rust with [ratatui](https://git
 - **Rust** (2024 edition; recent stable toolchain)
 - **Go** (Testet with 1.26.0)
 
-## Building
+## Installing
+### Arch
+There is an official AUR package that provides the `wstui` command:
+- [wstui-git](https://aur.archlinux.org/packages/wstui-git): last commit of `master`
+- [wstui](https://aur.archlinux.org/packages/wstui): latest release
+
+If you are not using arch, follow the building and usage sections.
+
+### Installing from source
 
 ```bash
-cargo build --release
+git clone https://github.com/NullSeile/wstui
+cd wstui
+cargo install --path .
 ```
 
 ## Usage
-
-
 ```bash
 # Start and link with QR code (shown in terminal)
-cargo run
+wstui
 
 # Link with phone number (pairing code will be printed)
-cargo run -- -p +1234567890
-```
-
-```bash
-# Start and link with QR code (shown in terminal)
-./target/release/wstui
-
-# Link with phone number (pairing code will be printed)
-./target/release/wstui --phone +1234567890
+wstui -- -p +1234567890
 ```
 
 On first run the client creates `whatsmeow_store.db` (session) and uses a `media/` directory for downloaded files. The local message cache is in `whatsapp.db`.
