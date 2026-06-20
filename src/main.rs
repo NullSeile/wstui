@@ -1,4 +1,4 @@
-use wstui::*;
+use wstui::app::App;
 
 use clap::Parser;
 

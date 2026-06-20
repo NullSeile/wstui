@@ -17,7 +17,8 @@ use ratatui_image::StatefulImage;
 use textwrap;
 use whatsrust::{self as wr, FileKind};
 
-use crate::{App, AppEvent, AppInput, FileMeta, Metadata, SelectedWidget};
+use crate::app::events::{AppEvent, AppInput};
+use crate::app::{FileMeta, App, Metadata, SelectedWidget};
 
 pub const IMAGE_HEIGHT: usize = 12;
 pub const IMAGE_WIDTH: usize = IMAGE_HEIGHT * 3;
@@ -287,7 +288,7 @@ pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<(
 
     let block = Block::bordered()
         .title(format!("Chat with {}", app.contact_name(&chat_jid)))
-        .title_bottom(format!("{:?}", app.key_buffer))
+        .title_bottom(format!("{:?}", app.kh.key_buffer))
         .border_style(Style::default().fg(
             if let SelectedWidget::MessageList = app.selected_widget {
                 ratatui::style::Color::Green

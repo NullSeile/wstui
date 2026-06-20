@@ -18,6 +18,7 @@ pub enum Mode {
     Normal,
     Insert,
     Visual,
+    VisualLine,
     Operator(char),
 }
 
@@ -27,6 +28,9 @@ impl Mode {
             Self::Normal => "type i to enter insert mode",
             Self::Insert => "type Esc to back to normal mode",
             Self::Visual => "type y to yank, type d to delete, type Esc to back to normal mode",
+            Self::VisualLine => {
+                "type y to yank, type d to delete, type Esc to back to normal mode"
+            }
             Self::Operator(_) => "move cursor to apply operator",
         };
         let title = format!("{} MODE ({})", self, help);
@@ -38,6 +42,7 @@ impl Mode {
             Self::Normal => Color::Reset,
             Self::Insert => Color::LightBlue,
             Self::Visual => Color::LightYellow,
+            Self::VisualLine => Color::Yellow,
             Self::Operator(_) => Color::LightGreen,
         };
         Style::default().fg(color).add_modifier(Modifier::REVERSED)
@@ -50,6 +55,7 @@ impl fmt::Display for Mode {
             Self::Normal => write!(f, "NORMAL"),
             Self::Insert => write!(f, "INSERT"),
             Self::Visual => write!(f, "VISUAL"),
+            Self::VisualLine => write!(f, "VISUAL LINE"),
             Self::Operator(c) => write!(f, "OPERATOR({})", c),
         }
     }
@@ -90,7 +96,7 @@ impl Vim {
         }
 
         match self.mode {
-            Mode::Normal | Mode::Visual | Mode::Operator(_) => {
+            Mode::Normal | Mode::Visual | Mode::VisualLine | Mode::Operator(_) => {
                 match input {
                     Input {
                         key: Key::Char('h'),
@@ -285,7 +291,7 @@ impl Vim {
                         key: Key::Char('v'),
                         ctrl: false,
                         ..
-                    } if self.mode == Mode::Visual => {
+                    } if self.mode == Mode::Visual || self.mode == Mode::VisualLine => {
                         textarea.cancel_selection();
                         return Transition::Mode(Mode::Normal);
                     }
@@ -335,7 +341,7 @@ impl Vim {
                         key: Key::Char('y'),
                         ctrl: false,
                         ..
-                    } if self.mode == Mode::Visual => {
+                    } if self.mode == Mode::Visual || self.mode == Mode::VisualLine => {
                         textarea.move_cursor(CursorMove::Forward); // Vim's text selection is inclusive
                         textarea.copy();
                         return Transition::Mode(Mode::Normal);
@@ -344,7 +350,7 @@ impl Vim {
                         key: Key::Char('d'),
                         ctrl: false,
                         ..
-                    } if self.mode == Mode::Visual => {
+                    } if self.mode == Mode::Visual || self.mode == Mode::VisualLine => {
                         textarea.move_cursor(CursorMove::Forward); // Vim's text selection is inclusive
                         textarea.cut();
                         return Transition::Mode(Mode::Normal);
@@ -353,7 +359,7 @@ impl Vim {
                         key: Key::Char('c'),
                         ctrl: false,
                         ..
-                    } if self.mode == Mode::Visual => {
+                    } if self.mode == Mode::Visual || self.mode == Mode::VisualLine => {
                         textarea.move_cursor(CursorMove::Forward); // Vim's text selection is inclusive
                         textarea.cut();
                         return Transition::Mode(Mode::Insert);

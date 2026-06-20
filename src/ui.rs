@@ -1,7 +1,7 @@
 pub mod message_list;
 pub mod text_input;
 
-use crate::{App, SelectedWidget};
+use crate::app::{App, SelectedWidget};
 use log::trace;
 use message_list::{get_quoted_text, render_messages};
 use ratatui::{

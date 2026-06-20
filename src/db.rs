@@ -8,7 +8,7 @@ use rusqlite::Connection;
 use strum::IntoEnumIterator;
 use whatsrust as wr;
 
-use crate::Chat;
+use crate::app::Chat;
 
 pub struct DatabaseHandler {
     db: Connection,
